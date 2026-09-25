@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PM Cockpit</title>
+  <meta name="description" content="Cockpit de portefeuille projets : vue d'ensemble, actions, risques, mails → actions.">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/" aria-label="Accueil">
+      <img src="icon.svg" alt="" width="22" height="22"><span>PM Cockpit</span>
+    </a>
+    <form id="capture" class="capture" autocomplete="off">
+      <input id="capture-input" type="text" placeholder="Capture rapide…  #CRM @Paul envoyer le planning vendredi !   (r: risque · c: changement · w: en attente)" aria-label="Capture rapide">
+      <button type="submit" class="btn primary">Ajouter</button>
+      <div id="capture-preview" class="capture-preview" aria-live="polite"></div>
+    </form>
+    <nav class="nav" id="nav">
+      <a href="#/" data-nav="home">Portefeuille</a>
+      <a href="#/todo" data-nav="todo">Mes actions <span class="count" id="nav-todo"></span></a>
+      <a href="#/inbox" data-nav="inbox">Inbox <span class="count" id="nav-inbox"></span></a>
+      <a href="#/mail" data-nav="mail">Mails → actions</a>
+      <a href="#/journal" data-nav="journal">Journal</a>
+      <a href="#/settings" data-nav="settings" aria-label="Réglages">Réglages</a>
+    </nav>
+  </header>
+  <main id="view" class="view" tabindex="-1"></main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="modal" class="modal"></dialog>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
