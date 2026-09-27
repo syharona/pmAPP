@@ -125,6 +125,7 @@ capInput.addEventListener('input', () => {
     const chips = [
       `<span class="chip"><b>${KIND_LABEL[p.kind]}${p.status === 'waiting' ? ' (en attente)' : ''}</b></span>`,
       `<span class="chip ${proj ? '' : 'warn'}">📁 ${proj ? esc(proj.code) : p.unknownTag ? `#${esc(p.unknownTag)} inconnu → Inbox` : 'Inbox'}</span>`,
+      p.stepTitle ? `<span class="chip">▸ ${esc(p.stepTitle)}</span>` : p.unknownStep ? `<span class="chip warn">▸ ~${esc(p.unknownStep)} introuvable</span>` : '',
       p.kind === 'action' ? `<span class="chip">👤 ${ownerLabel(p.owner)}</span>` : '',
       p.due ? `<span class="chip">📅 ${fmtDate(p.due)}</span>` : '',
       p.priority !== 'normal' ? `<span class="chip">⚡ ${PRIO_LABEL[p.priority]}</span>` : '',
@@ -158,10 +159,17 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------- action modals
-function actionForm(a = {}) {
+const stepOptions = (steps, sel) =>
+  steps.length
+    ? `<option value="">— Aucune phase —</option>` + steps.map((st) => `<option value="${st.id}" ${Number(sel) === st.id ? 'selected' : ''}>${esc(st.title)}</option>`).join('')
+    : '<option value="">— Pas de rétroplanning —</option>';
+const loadSteps = (projectId) => (projectId ? api('GET', `/api/retro-steps?project=${projectId}`) : Promise.resolve([]));
+
+function actionForm(a = {}, steps = []) {
   return `<div class="form">
     <label class="full">Action<input name="title" required value="${esc(a.title)}"></label>
     <label>Projet<select name="project_id">${projectOptions(a.project_id)}</select></label>
+    <label>Phase (rétroplanning)<select name="step_id">${stepOptions(steps, a.step_id)}</select></label>
     <label>Porteur<input name="owner" value="${esc(a.owner ?? 'moi')}" placeholder="moi, Paul…"></label>
     <label>Échéance<input type="date" name="due_date" value="${esc(a.due_date || '')}"></label>
     <label>Priorité<select name="priority">${options(PRIO_LABEL, a.priority || 'normal')}</select></label>
@@ -170,10 +178,17 @@ function actionForm(a = {}) {
     ${a.id ? `<div class="full small muted">Créée ${fmtTs(a.created_at)} via ${esc(a.source)}${a.source_ref ? ` (${esc(a.source_ref)})` : ''}</div>` : ''}
   </div>`;
 }
-function editAction(a) {
-  modal(a.id ? `Action #${a.id}` : 'Nouvelle action', actionForm(a), {
+async function editAction(a) {
+  const steps = await loadSteps(a.project_id);
+  const dlg = modal(a.id ? `Action #${a.id}` : 'Nouvelle action', actionForm(a, steps), {
     extra: a.id ? '<button class="btn danger" value="delete" type="button" id="del-action">Supprimer</button>' : '',
     onSubmit: (data) => (a.id ? api('PATCH', `/api/actions/${a.id}`, data) : api('POST', '/api/actions', data)),
+  });
+  // Les phases proposées suivent le projet choisi.
+  const projectSel = $('[name=project_id]', dlg);
+  projectSel.addEventListener('change', async () => {
+    const stepSel = $('[name=step_id]', dlg);
+    stepSel.innerHTML = stepOptions(await loadSteps(Number(projectSel.value) || null), stepSel.value);
   });
   $('#del-action')?.addEventListener('click', async () => {
     if (!confirm('Supprimer cette action ?')) return;
@@ -276,7 +291,8 @@ const cache = { actions: new Map(), risks: new Map() };
 const remember = (kind, rows) => rows.forEach((r) => cache[kind].set(r.id, r));
 
 handlers['edit-action'] = (el) => editAction(cache.actions.get(Number(el.dataset.id)) || {});
-handlers['new-action'] = (el) => editAction({ project_id: el.dataset.project ? Number(el.dataset.project) : null });
+handlers['new-action'] = (el) =>
+  editAction({ project_id: el.dataset.project ? Number(el.dataset.project) : null, step_id: el.dataset.step ? Number(el.dataset.step) : null });
 handlers['done'] = (el) => setStatus(el.dataset.id, 'done');
 handlers['reopen'] = (el) => setStatus(el.dataset.id, 'todo');
 handlers['snooze'] = async (el) => {
@@ -410,12 +426,14 @@ function feedItem(j) {
   return `<li><span class="feed-kind">${KIND_LABEL[j.kind] || esc(j.kind)}</span><div class="grow">${j.project_code ? `<a class="tag" href="#/p/${j.project_id}">${esc(j.project_code)}</a> ` : ''}${esc(j.text)}</div><span class="small muted num" title="${esc(j.source)}">${SOURCE_ICON[j.source] || ''} ${fmtTs(j.created_at)}</span></li>`;
 }
 
-function actionRow(a, { showProject = false } = {}) {
+const phaseChip = (a) => (a.step_title ? `<span class="phase" title="Phase du rétroplanning">▸ ${esc(a.step_title)}</span>` : '');
+
+function actionRow(a, { showProject = false, beyond = new Set() } = {}) {
   const done = a.status === 'done' || a.status === 'cancelled';
   return `<tr class="${done ? 'done' : ''}">
     <td><button class="check" title="${done ? 'Rouvrir' : 'Marquer fait'}" aria-label="${done ? 'Rouvrir' : 'Marquer fait'}" data-act="${done ? 'reopen' : 'done'}" data-id="${a.id}">${done ? '✓' : ''}</button></td>
     ${showProject ? `<td>${projTag(a.project_code, a.project_id)}</td>` : ''}
-    <td class="title"><a href="#" class="t" data-act="edit-action" data-id="${a.id}">${esc(a.title)}</a>${a.details ? `<div class="small muted">${esc(a.details.slice(0, 120))}</div>` : ''}</td>
+    <td class="title"><a href="#" class="t" data-act="edit-action" data-id="${a.id}">${esc(a.title)}</a>${a.step_title || beyond.has(a.id) ? `<div class="small">${phaseChip(a)}${beyond.has(a.id) ? ' <span class="late" title="Échéance postérieure à la fin au plus tard de la phase">⚠ après la fin de phase</span>' : ''}</div>` : ''}${a.details ? `<div class="small muted">${esc(a.details.slice(0, 120))}</div>` : ''}</td>
     <td>${ownerLabel(a.owner)}</td>
     <td class="num">${done ? fmtDate(a.due_date) : relDate(a.due_date)}</td>
     <td class="prio-${a.priority}">${PRIO_LABEL[a.priority]}</td>
@@ -484,7 +502,12 @@ function ganttRows(retro, bounds, { editable = false } = {}) {
       const tip = `${st.title}\nAu plus tard : ${fmtDate(st.latest_start)} → ${fmtDate(st.latest_end)} (${st.duration_days} j ouvrés)\n${STEP_STATUS[st.status]}${st.owner ? ' · ' + st.owner : ''}${warn ? '\n⚠ ' + warn : ''}`;
       return `<div class="g-row">
         <div class="g-label">${editable ? `<a href="#" data-act="edit-step" data-id="${st.id}">${esc(st.title)}</a>` : esc(st.title)}
-          <small>${st.duration_days} j${st.status === 'doing' && st.remaining_days != null ? ` (reste ${st.remaining_days})` : ''} · ${fmtDate(st.latest_start)} → ${fmtDate(st.latest_end)}${st.owner ? ` · ${esc(st.owner)}` : ''}${warn ? ` · <span class="late">${esc(warn)}</span>` : ''}</small></div>
+          <small>${st.duration_days} j${st.status === 'doing' && st.remaining_days != null ? ` (reste ${st.remaining_days})` : ''} · ${fmtDate(st.latest_start)} → ${fmtDate(st.latest_end)}${st.owner ? ` · ${esc(st.owner)}` : ''}${warn ? ` · <span class="late">${esc(warn)}</span>` : ''}</small>
+          ${
+            st.openActions || editable
+              ? `<small>${editable ? `<a href="#" data-act="phase-filter" data-id="${st.id}">${st.openActions || 0} action(s)</a>` : `${st.openActions} action(s)`}${st.lateActions ? ` · <span class="late">${st.lateActions} en retard</span>` : ''}${st.beyondActions?.length ? ` · <span class="late">${st.beyondActions.length} après la fin de phase</span>` : ''}${editable ? ` · <a href="#" data-act="new-action" data-project="${st.project_id}" data-step="${st.id}">+ action</a>` : ''}</small>`
+              : ''
+          }</div>
         <div class="g-track" title="${esc(tip)}">${lines}<i class="g-bar ${cls}" style="left:${left}%;width:${width}%"></i></div>
         <div class="g-ctl">${
           editable
@@ -544,6 +567,7 @@ async function shareProject(p) {
 }
 
 let projectFilter = 'open';
+let phaseFilter = null;
 async function renderProject(id) {
   const d = await api('GET', `/api/projects/${id}`);
   const p = d.project;
@@ -625,9 +649,18 @@ async function renderProject(id) {
     }
   </section>`;
 
-  const actions = d.actions.filter((a) =>
-    projectFilter === 'open' ? a.status !== 'done' && a.status !== 'cancelled' : projectFilter === 'late' ? a.due_date && a.due_date < today() && a.status !== 'done' && a.status !== 'cancelled' : true
+  const beyond = new Set((m.retro?.steps || []).flatMap((st) => st.beyondActions || []));
+  if (phaseFilter && !(m.retro?.steps || []).some((st) => st.id === phaseFilter)) phaseFilter = null;
+  handlers['phase-filter'] = (el) => {
+    phaseFilter = el.dataset.id ? Number(el.dataset.id) : null;
+    renderProject(id).then(() => $('#actions-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
+  const actions = d.actions.filter(
+    (a) =>
+      (!phaseFilter || a.step_id === phaseFilter) &&
+      (projectFilter === 'open' ? a.status !== 'done' && a.status !== 'cancelled' : projectFilter === 'late' ? a.due_date && a.due_date < today() && a.status !== 'done' && a.status !== 'cancelled' : true)
   );
+  const phaseName = phaseFilter ? m.retro.steps.find((st) => st.id === phaseFilter).title : null;
   const risks = d.risks
     .map(
       (r) => `<tr class="${r.status === 'closed' ? 'done' : ''}"><td><span class="score ${scoreCls(r.score)}">${r.score}</span></td>
@@ -659,11 +692,11 @@ async function renderProject(id) {
     </section>
     <div class="grid cols-main">
       <div class="stack">
-        <section class="card">
-          <header><h2>Actions</h2><div class="row">
+        <section class="card" id="actions-card">
+          <header><h2>Actions${phaseName ? ` <span class="phase">▸ ${esc(phaseName)} <button class="btn ghost sm" data-act="phase-filter" aria-label="Retirer le filtre de phase">✕</button></span>` : ''}</h2><div class="row">
             <div class="seg">${[['open', 'Ouvertes'], ['late', 'En retard'], ['all', 'Toutes']].map(([v, l]) => `<button data-act="pfilter" data-v="${v}" class="${projectFilter === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-            <button class="btn sm" data-act="new-action" data-project="${p.id}">+ Action</button></div></header>
-          <div class="table-wrap">${actions.length ? `<table class="table"><thead><tr><th></th><th>Action</th><th>Porteur</th><th>Échéance</th><th>Priorité</th><th>Statut</th><th></th></tr></thead><tbody>${actions.map((a) => actionRow(a)).join('')}</tbody></table>` : '<div class="empty">Aucune action.</div>'}</div>
+            <button class="btn sm" data-act="new-action" data-project="${p.id}" ${phaseFilter ? `data-step="${phaseFilter}"` : ''}>+ Action</button></div></header>
+          <div class="table-wrap">${actions.length ? `<table class="table"><thead><tr><th></th><th>Action</th><th>Porteur</th><th>Échéance</th><th>Priorité</th><th>Statut</th><th></th></tr></thead><tbody>${actions.map((a) => actionRow(a, { beyond })).join('')}</tbody></table>` : '<div class="empty">Aucune action.</div>'}</div>
         </section>
         <section class="card">
           <header><h2>Risques</h2><button class="btn sm" data-act="new-risk" data-project="${p.id}">+ Risque</button></header>
@@ -703,7 +736,7 @@ async function renderTodo() {
   const item = (a, follow = false) => `<div class="todo-item">
       <button class="check" data-act="done" data-id="${a.id}" aria-label="Marquer fait" title="Marquer fait"></button>
       <div class="grow"><div><a href="#" class="t" data-act="edit-action" data-id="${a.id}" style="color:inherit">${esc(a.title)}</a></div>
-        <div class="meta">${projTag(a.project_code, a.project_id)}<span>${relDate(a.due_date)}</span>${a.priority !== 'normal' ? `<span class="prio-${a.priority}">${PRIO_LABEL[a.priority]}</span>` : ''}${follow ? `<span>👤 ${ownerLabel(a.owner)}</span>` : ''}${follow && a.needsNudge ? '<span class="late">à relancer</span>' : ''}${SOURCE_ICON[a.source] ? `<span title="${esc(a.source)}">${SOURCE_ICON[a.source]}</span>` : ''}</div></div>
+        <div class="meta">${projTag(a.project_code, a.project_id)}${phaseChip(a)}<span>${relDate(a.due_date)}</span>${a.priority !== 'normal' ? `<span class="prio-${a.priority}">${PRIO_LABEL[a.priority]}</span>` : ''}${follow ? `<span>👤 ${ownerLabel(a.owner)}</span>` : ''}${follow && a.needsNudge ? '<span class="late">à relancer</span>' : ''}${SOURCE_ICON[a.source] ? `<span title="${esc(a.source)}">${SOURCE_ICON[a.source]}</span>` : ''}</div></div>
       <div class="acts"><button class="btn sm" data-act="snooze" data-id="${a.id}" data-days="1" title="Reporter d'un jour">+1j</button><button class="btn sm" data-act="snooze" data-id="${a.id}" data-days="7" title="Reporter d'une semaine">+1s</button></div>
     </div>`;
   const group = (title, list, cls = '') =>
@@ -922,6 +955,7 @@ async function renderSettings() {
         <table class="table small"><tbody>
           <tr><td><code>#CRM relancer Paul sur le budget vendredi</code></td><td>Action pour moi, projet CRM, échéance vendredi</td></tr>
           <tr><td><code>#CRM @Paul envoyer le planning demain !</code></td><td>Action pour Paul, priorité haute</td></tr>
+          <tr><td><code>#ERP ~recette préparer les jeux de test lundi</code></td><td>Action rattachée à la phase « Recette… » du rétroplanning</td></tr>
           <tr><td><code>w: #ERP @Sophie retour juridique 12/10</code></td><td>En attente de Sophie → apparaît dans « À relancer »</td></tr>
           <tr><td><code>r: #ERP fournisseur en retard p4 i5</code></td><td>Risque probabilité 4 × impact 5</td></tr>
           <tr><td><code>c: #CRM go-live décalé au 15/11</code></td><td>Changement consigné au journal</td></tr>

@@ -182,6 +182,11 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
     if (!project.ttm) repo.update('projects', project.id, { ttm: 1 });
     return repo.listRetroSteps(project.id);
   });
+  route('GET', '/api/retro-steps', (req, res, p, body, q) => {
+    const pid = Number(q.get('project'));
+    if (!pid) throw new HttpError(400, 'Paramètre project requis');
+    return repo.listRetroSteps(pid);
+  });
   route('PATCH', '/api/retro-steps/:id', (req, res, p, body) => {
     check(body.status, ENUMS.stepStatus, 'status');
     if (body.duration_days !== undefined) body.duration_days = duration(body.duration_days);
@@ -224,17 +229,29 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
       status: q.get('status') || undefined,
     });
   });
+  // Une action ne peut être rattachée qu'à une phase de son propre projet.
+  const stepFor = (stepId, projectId) => {
+    if (stepId === null || stepId === undefined || stepId === '') return null;
+    const st = repo.get('retro_steps', Number(stepId));
+    if (!st || st.project_id !== projectId) throw new HttpError(400, 'Phase invalide pour ce projet');
+    return st.id;
+  };
   route('POST', '/api/actions', (req, res, p, body) => {
     check(body.priority, ENUMS.priority, 'priority');
     check(body.status, ENUMS.status, 'status');
     if (!body.title) throw new HttpError(400, 'Titre obligatoire');
-    return repo.createAction({ ...body, project_id: projectIdOf(body.project_id), source: 'web' });
+    const project_id = projectIdOf(body.project_id);
+    return repo.createAction({ ...body, project_id, step_id: stepFor(body.step_id, project_id), source: 'web' });
   });
   route('PATCH', '/api/actions/:id', (req, res, p, body) => {
     check(body.priority, ENUMS.priority, 'priority');
     check(body.status, ENUMS.status, 'status');
+    const current = must(repo.get('actions', id(p)));
     if ('project_id' in body) body.project_id = projectIdOf(body.project_id);
-    return must(repo.updateAction(id(p), body));
+    const projectId = 'project_id' in body ? body.project_id : current.project_id;
+    if ('step_id' in body) body.step_id = stepFor(body.step_id, projectId);
+    else if (projectId !== current.project_id) body.step_id = null; // changement de projet : l'ancienne phase ne s'applique plus
+    return must(repo.updateAction(current.id, body));
   });
   route('POST', '/api/actions/:id/snooze', (req, res, p, body) => {
     const a = must(repo.get('actions', id(p)));

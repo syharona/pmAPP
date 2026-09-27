@@ -100,3 +100,58 @@ test('migration : une base existante reçoit les nouvelles colonnes', () => {
   assert.equal(p.ttm, 0);
   assert.equal(p.status_note, '');
 });
+
+test('actions rattachées à une phase : capture ~phase, contrôle, signaux', async () => {
+  const { parseCapture } = await import('../src/parser.js');
+  const { quickCapture, moveItem } = await import('../src/capture.js');
+  const { projectDashboard } = await import('../src/health.js');
+  const { todayISO, addDays } = await import('../src/dates.js');
+  const repo = openDb(':memory:');
+  const today = todayISO();
+  const p = repo.insert('projects', { code: 'ERP', name: 'ERP', deadline: addDays(today, 30), ttm: 1 });
+  const other = repo.insert('projects', { code: 'CRM', name: 'CRM' });
+  const recette = repo.addRetroStep({ project_id: p.id, title: 'Recette utilisateurs', duration_days: 5 });
+  repo.addRetroStep({ project_id: p.id, title: 'Mise en production', duration_days: 1 });
+
+  const parsed = parseCapture('#ERP ~recette préparer les jeux de test lundi', { projects: repo.listProjects(), steps: repo.listRetroSteps(), today });
+  assert.equal(parsed.stepId, recette.id);
+  assert.equal(parsed.title, 'Préparer les jeux de test');
+  assert.equal(parseCapture('#ERP ~inconnue truc', { projects: repo.listProjects(), steps: repo.listRetroSteps(), today }).unknownStep, 'inconnue');
+
+  // échéance après la fin au plus tard de la phase → signal
+  const { item } = quickCapture(repo, `#ERP ~recette tout valider ${addDays(today, 30).split('-').reverse().join('/')}`);
+  assert.equal(item.step_id, recette.id);
+  const d = projectDashboard(repo, p.id, today);
+  const st = d.metrics.retro.steps.find((x) => x.id === recette.id);
+  assert.equal(st.openActions, 1);
+  assert.deepEqual(st.beyondActions, [item.id]);
+  assert.ok(d.metrics.signals.some((s) => /après la fin au plus tard/.test(s.text)));
+  assert.equal(d.actions[0].step_title, 'Recette utilisateurs');
+
+  // changement de projet → la phase est retirée ; suppression de la phase → lien remis à null
+  moveItem(repo, 'action', item.id, other.id);
+  assert.equal(repo.get('actions', item.id).step_id, null);
+  const a2 = repo.createAction({ project_id: p.id, step_id: recette.id, title: 'x' });
+  repo.remove('retro_steps', recette.id);
+  assert.equal(repo.get('actions', a2.id).step_id, null);
+});
+
+test('API : une action ne peut pas pointer vers la phase d’un autre projet', async () => {
+  const repo = openDb(':memory:');
+  const server = http.createServer(createApp(repo, { appPassword: '', sessionSecret: 's', ingestToken: '', telegram: { allowedChatIds: [] }, whatsapp: {}, anthropic: {} }));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = (method, url, body) => fetch(base + url, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    const a = repo.insert('projects', { code: 'A', name: 'A' });
+    const b = repo.insert('projects', { code: 'B', name: 'B' });
+    const stA = repo.addRetroStep({ project_id: a.id, title: 'Build' });
+    assert.equal((await call('POST', '/api/actions', { title: 't', project_id: b.id, step_id: stA.id })).status, 400);
+    const ok = await (await call('POST', '/api/actions', { title: 't', project_id: a.id, step_id: stA.id })).json();
+    assert.equal(ok.step_id, stA.id);
+    const moved = await (await call('PATCH', `/api/actions/${ok.id}`, { project_id: b.id })).json();
+    assert.equal(moved.step_id, null);
+  } finally {
+    server.close();
+  }
+});

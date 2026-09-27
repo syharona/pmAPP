@@ -88,6 +88,17 @@ export function projectMetrics(project, { actions, risks, milestones, journal, h
         `Étape « ${first.title} » ${first.overdue ? `aurait dû finir le ${formatShort(first.latest_end)}` : `aurait dû démarrer le ${formatShort(first.latest_start)}`}${late.length > 1 ? ` (+${late.length - 1} autre(s))` : ''}`
       );
     }
+    // Actions rattachées aux phases
+    for (const st of retro.steps) {
+      const mine = open.filter((a) => a.step_id === st.id);
+      st.openActions = mine.length;
+      st.lateActions = mine.filter((a) => a.due_date && a.due_date < today).length;
+      st.beyondActions = mine.filter((a) => a.due_date && a.due_date > st.latest_end).map((a) => a.id);
+    }
+    const beyond = retro.steps.flatMap((st) => st.beyondActions);
+    if (beyond.length) hit(Math.min(12, beyond.length * 4), 'warning', `${beyond.length} action(s) prévue(s) après la fin au plus tard de leur phase`);
+    const closedWithOpen = retro.steps.filter((st) => st.status === 'done' && st.openActions);
+    if (closedWithOpen.length) signals.push({ level: 'info', text: `Phase « ${closedWithOpen[0].title} » terminée avec ${closedWithOpen[0].openActions} action(s) encore ouverte(s)`, points: 0 });
     if (retro.infeasibleBy > 0) signals.push({ level: 'info', text: `Rétroplanning démarre ${retro.infeasibleBy} j ouvrés avant la date de début du projet`, points: 0 });
   }
 

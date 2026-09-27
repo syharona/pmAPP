@@ -43,6 +43,18 @@ for (const [project_id, title, owner, due_date, priority, status = 'todo'] of ac
   repo.createAction({ project_id, title, owner, due_date, priority, status, source: 'web' });
 }
 
+// Rattachement de quelques actions aux phases du rétroplanning
+const linkToStep = (actionTitle, stepTitle) => {
+  const a = repo.all('SELECT id, project_id FROM actions WHERE title = ?', actionTitle)[0];
+  const st = a && repo.listRetroSteps(a.project_id).find((x) => x.title === stepTitle);
+  if (st) repo.update('actions', a.id, { step_id: st.id });
+};
+linkToStep('PV de recette lot comptabilité', 'Recette lot comptabilité');
+linkToStep('Relancer le fournisseur sur les correctifs recette', 'Recette lot paie');
+linkToStep('Préparer le comité de pilotage go/no-go', 'Go/no-go COPIL');
+repo.createAction({ project_id: erp.id, title: 'Plan de bascule détaillé', owner: 'moi', due_date: d(14), priority: 'high', source: 'web' });
+linkToStep('Plan de bascule détaillé', 'Bascule & mise en production');
+
 const risks = [
   [erp.id, 'Correctifs fournisseur livrés trop tard pour la recette', 4, 5],
   [erp.id, 'Indisponibilité des key users pendant la clôture', 3, 4],

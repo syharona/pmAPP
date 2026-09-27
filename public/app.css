@@ -305,3 +305,5 @@ a.kpi:hover { text-decoration: none; border-color: var(--accent); }
 .g-legend .gl { position: static; display: inline-block; height: 12px; }
 .g-group .g-row:last-child { border-bottom: 0; }
 .mb { margin-bottom: 16px; }
+.phase { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; font-weight: 600; color: var(--ink-2); background: var(--surface-2); border-radius: 4px; padding: 0 6px; }
+h2 .phase { font-size: 12px; vertical-align: middle; }

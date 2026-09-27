@@ -30,6 +30,8 @@ test('dates relatives en français', () => {
   }
   assert.equal(extractDate('version 2.1 du livrable', today).date, null);
   assert.equal(extractDate('rendu avant le 12/10 stp', today).text, 'rendu stp');
+  // "le" à l'intérieur d'un mot n'est pas un mot de liaison
+  assert.equal(extractDate('répéter la bascule jeudi', today).text, 'répéter la bascule');
 });
 
 test('action complète', () => {

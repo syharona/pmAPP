@@ -44,8 +44,8 @@ export function renderText(c) {
   const signals = m.signals.filter((s) => s.level !== 'info');
   if (signals.length) lines.push('', 'Points d’attention :', ...signals.map((s) => `• ${s.text}`));
   if (c.risks.length) lines.push('', 'Principaux risques :', ...c.risks.slice(0, 5).map((r) => `• [${r.probability * r.impact}] ${r.title}${r.mitigation ? ` → ${r.mitigation}` : ''}`));
-  if (c.overdue.length) lines.push('', 'Actions en retard :', ...c.overdue.map((a) => `• ${a.title} — ${a.who}, prévu ${formatShort(a.due_date)}`));
-  if (c.upcoming.length) lines.push('', 'Prochaines échéances (14 j) :', ...c.upcoming.map((a) => `• ${formatShort(a.due_date)} — ${a.title} (${a.who})`));
+  if (c.overdue.length) lines.push('', 'Actions en retard :', ...c.overdue.map((a) => `• ${a.title}${a.step_title ? ` [${a.step_title}]` : ''} — ${a.who}, prévu ${formatShort(a.due_date)}`));
+  if (c.upcoming.length) lines.push('', 'Prochaines échéances (14 j) :', ...c.upcoming.map((a) => `• ${formatShort(a.due_date)} — ${a.title}${a.step_title ? ` [${a.step_title}]` : ''} (${a.who})`));
   const nextMs = c.milestones.filter((ms) => !ms.done && ms.due_date).slice(0, 3);
   if (nextMs.length) lines.push('', 'Jalons :', ...nextMs.map((ms) => `• ${formatShort(ms.due_date)} — ${ms.title}`));
   if (c.decisions.length) lines.push('', 'Décisions & changements (30 j) :', ...c.decisions.slice(0, 6).map((j) => `• ${KIND[j.kind] || j.kind} : ${j.text}`));
@@ -63,7 +63,7 @@ function gantt(retro, today) {
       const left = x(s.latest_start);
       const width = Math.max(0.8, x(addDays(s.latest_end, 1)) - left);
       const cls = s.status === 'done' ? 'done' : s.late || s.overdue ? 'late' : s.status === 'doing' ? 'doing' : 'todo';
-      return `<div class="g-row"><div class="g-label">${esc(s.title)}<small>${formatShort(s.latest_start)} → ${formatShort(s.latest_end)} · ${s.duration_days} j · ${STEP_STATUS[s.status] || s.status}${s.owner ? ` · ${esc(s.owner)}` : ''}</small></div>
+      return `<div class="g-row"><div class="g-label">${esc(s.title)}<small>${formatShort(s.latest_start)} → ${formatShort(s.latest_end)} · ${s.duration_days} j · ${STEP_STATUS[s.status] || s.status}${s.owner ? ` · ${esc(s.owner)}` : ''}${s.openActions ? ` · ${s.openActions} action(s) ouverte(s)${s.lateActions ? `, <span class="crit">${s.lateActions} en retard</span>` : ''}` : ''}</small></div>
         <div class="g-track"><i class="g-bar ${cls}" style="left:${left}%;width:${width}%"></i></div></div>`;
     })
     .join('');
@@ -75,7 +75,7 @@ export function renderHtml(c) {
   const p = c.project;
   const m = c.metrics;
   const table = (head, rows) => (rows.length ? `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>` : '<p class="muted">—</p>');
-  const actionRows = (list) => list.map((a) => `<tr><td>${esc(a.title)}</td><td>${esc(a.who)}</td><td class="nw">${formatShort(a.due_date)}</td><td>${PRIO[a.priority]}</td><td>${STATUS[a.status]}</td></tr>`);
+  const actionRows = (list) => list.map((a) => `<tr><td>${esc(a.title)}${a.step_title ? `<br><small class="muted">▸ ${esc(a.step_title)}</small>` : ''}</td><td>${esc(a.who)}</td><td class="nw">${formatShort(a.due_date)}</td><td>${PRIO[a.priority]}</td><td>${STATUS[a.status]}</td></tr>`);
   const r = c.retro;
 
   return `<!doctype html>

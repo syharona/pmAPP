@@ -121,6 +121,9 @@ const COLUMNS = {
     ttm: 'INTEGER DEFAULT 0',         // deadline imposée → rétroplanning
     status_note: "TEXT DEFAULT ''",   // message clé pour le reporting
   },
+  actions: {
+    step_id: 'INTEGER REFERENCES retro_steps(id) ON DELETE SET NULL', // phase du rétroplanning
+  },
 };
 
 function migrate(db) {
@@ -143,7 +146,7 @@ function pick(obj, keys) {
 
 const FIELDS = {
   projects: ['code', 'name', 'aliases', 'description', 'sponsor', 'phase', 'rag', 'progress', 'start_date', 'deadline', 'archived', 'ttm', 'status_note'],
-  actions: ['project_id', 'title', 'details', 'owner', 'due_date', 'priority', 'status', 'source', 'source_ref'],
+  actions: ['project_id', 'step_id', 'title', 'details', 'owner', 'due_date', 'priority', 'status', 'source', 'source_ref'],
   risks: ['project_id', 'title', 'description', 'probability', 'impact', 'status', 'owner', 'mitigation', 'source'],
   journal: ['project_id', 'kind', 'text', 'source'],
   milestones: ['project_id', 'title', 'due_date', 'done'],
@@ -227,8 +230,9 @@ function createRepo(db) {
         params.push(owner);
       }
       return all(
-        `SELECT a.*, p.code AS project_code, p.name AS project_name
+        `SELECT a.*, p.code AS project_code, p.name AS project_name, s.title AS step_title
          FROM actions a LEFT JOIN projects p ON p.id = a.project_id
+         LEFT JOIN retro_steps s ON s.id = a.step_id
          ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
          ORDER BY a.status IN ('done','cancelled'), a.due_date IS NULL, a.due_date,
            CASE a.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, a.id DESC`,
@@ -307,6 +311,7 @@ function createRepo(db) {
 
     // --- rétroplanning
     listRetroSteps(projectId) {
+      if (projectId === undefined) return all('SELECT * FROM retro_steps ORDER BY project_id, position, id');
       return all('SELECT * FROM retro_steps WHERE project_id = ? ORDER BY position, id', projectId);
     },
     addRetroStep(data) {

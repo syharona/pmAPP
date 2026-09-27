@@ -31,6 +31,7 @@ Même syntaxe partout. Tout est optionnel sauf le texte :
 |---|---|
 | `#CRM relancer Paul sur le budget vendredi` | Action pour moi, projet CRM, échéance vendredi |
 | `#CRM @Paul envoyer le planning demain !` | Action portée par Paul, priorité haute |
+| `#ERP ~recette préparer les jeux de test lundi` | Action rattachée à la phase « Recette… » du rétroplanning |
 | `w: #ERP @Sophie retour juridique 12/10` | « En attente de » Sophie → liste des relances |
 | `r: #ERP fournisseur en retard p4 i5` | Risque (probabilité 4 × impact 5) |
 | `c: #CRM go-live décalé au 15/11` | Changement consigné au journal du projet |
@@ -84,6 +85,8 @@ Dans la fiche projet, coche **Deadline imposée (TTM)**, puis ajoute les étapes
 - la **marge** : jours ouvrés disponibles d'ici la deadline moins le travail restant. Pour une étape en cours, renseigne le *reste à faire* ; sinon toute sa durée est comptée ;
 - les étapes **en retard** : pas démarrée alors que son démarrage au plus tard est passé, ou pas terminée après sa fin au plus tard.
 
+**Actions rattachées à une phase** : dans le formulaire d'une action, choisis la phase du projet, ou tape `~recette` dans la capture rapide (Telegram compris). Pour chaque phase, le Gantt affiche le nombre d'actions ouvertes et en retard, et un clic filtre la liste des actions. Une action dont l'échéance tombe **après la fin au plus tard de sa phase** est signalée : c'est elle qui fait glisser le planning. Si l'action change de projet ou si la phase est supprimée, le lien est retiré.
+
 L'onglet **Rétroplanning** montre tous les projets TTM sur un même axe de temps, triés par marge (la plus faible en premier). Les démarrages au plus tard apparaissent aussi dans les « Échéances à venir » du portefeuille.
 
 ## Partager le statut d'un projet
@@ -113,6 +116,7 @@ Chaque projet part de 100 points. Chaque signal retire des points et s'affiche a
 | Au moins 3 changements en 7 jours | −8 |
 | Rétroplanning : marge négative (marge de 5 j ouvrés ou moins) | −20 (−10) |
 | Rétroplanning : étape en retard | −6 chacune (max −18) |
+| Action prévue après la fin au plus tard de sa phase | −4 chacune (max −12) |
 
 Un score ≥ 75 donne 🟢, de 50 à 74 🟠, en dessous de 50 🔴. Quand le statut déclaré est plus optimiste que le calcul, un signal le rappelle (projet « pastèque »).
 

@@ -5,7 +5,7 @@ import { todayISO } from './dates.js';
 const JOURNAL_KINDS = new Set(['change', 'decision', 'note']);
 
 export function captureContext(repo) {
-  return { projects: repo.listProjects(), meAliases: repo.meAliases(), today: todayISO() };
+  return { projects: repo.listProjects(), steps: repo.listRetroSteps(), meAliases: repo.meAliases(), today: todayISO() };
 }
 
 export function saveItem(repo, item, { source = 'web', sourceRef = '' } = {}) {
@@ -33,6 +33,7 @@ export function saveItem(repo, item, { source = 'web', sourceRef = '' } = {}) {
 
   const action = repo.createAction({
     project_id: projectId,
+    step_id: projectId ? item.stepId ?? item.step_id ?? null : null,
     title: item.title,
     details: item.details || '',
     owner: item.owner || 'moi',
@@ -53,7 +54,8 @@ export function quickCapture(repo, text, opts = {}) {
 
 // Déplace un élément capturé vers un autre projet (utilisé par les boutons Telegram / l'inbox).
 export function moveItem(repo, kind, id, projectId) {
-  const table = kind === 'action' ? 'actions' : kind === 'risk' ? 'risks' : 'journal';
+  if (kind === 'action') return repo.update('actions', id, { project_id: projectId, step_id: null }); // la phase appartient à l'ancien projet
+  const table = kind === 'risk' ? 'risks' : 'journal';
   return repo.update(table, id, { project_id: projectId });
 }
 
