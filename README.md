@@ -8,18 +8,18 @@ Cockpit de portefeuille projets pour chef de projet / Scrum Master :
 - **Mails → actions** : copier-coller un mail (ou le transférer au bot, ou via Power Automate), l'app propose les actions, risques et changements ; tu valides d'un clic.
 - **Mes actions (ToDo)** : en retard / aujourd'hui / semaine / plus tard, tes relances (« en attente de »), ta charge sur 10 jours ouvrés, report en +1j / +1s.
 
-Aucune dépendance obligatoire : Node.js ≥ 22.13 suffit (base SQLite intégrée à Node). Les données restent dans `data/pmapp.db` sur ton poste.
+Node.js ≥ 20.11. Sous Node ≥ 22.13, l'app utilise la base SQLite intégrée à Node (`node:sqlite`) ; sous Node 20, elle bascule automatiquement sur `sql.js` (SQLite en WebAssembly, installé par `npm install`, sans compilation). Les données restent dans `data/pmapp.db` sur ton poste.
 
 ## Démarrage
 
 ```bash
 cp .env.example .env      # puis renseigne ce dont tu as besoin
-npm install               # optionnel : n'installe que le SDK Claude (extraction IA des mails)
+npm install               # sql.js (requis sous Node 20) + SDK Claude optionnel (extraction IA des mails)
 npm run seed              # optionnel : données de démonstration
 npm start                 # → http://127.0.0.1:3000
 ```
 
-`npm test` lance les tests.
+`npm test` lance les tests (`PMAPP_SQLITE=sqljs npm test` force le moteur sql.js). Node 20 n'étant plus maintenu, passer à Node 22 LTS reste recommandé quand c'est possible.
 
 ## Capturer une action (web, Telegram, WhatsApp)
 
