@@ -6,6 +6,8 @@ Cockpit de portefeuille projets pour chef de projet / Scrum Master :
 - **Un dashboard par projet** : actions, matrice des risques probabilité × impact, signaux expliqués, jalons, journal des changements et décisions.
 - **Capture en 5 secondes depuis le téléphone** via un bot **Telegram** (ou **WhatsApp**) : un message = une action, sans formulaire.
 - **Mails → actions** : copier-coller un mail (ou le transférer au bot, ou via Power Automate), l'app propose les actions, risques et changements ; tu valides d'un clic.
+- **Rétroplanning** pour les projets à deadline imposée (TTM) : les étapes sont planifiées à rebours depuis la deadline, en jours ouvrés (week-ends et jours fériés français exclus), avec la marge restante et les étapes qui auraient déjà dû démarrer.
+- **Export du statut d'un projet** à tout moment : rapport HTML autonome (imprimable en PDF), résumé texte à coller dans Teams ou Outlook, CSV des actions.
 - **Mes actions (ToDo)** : en retard / aujourd'hui / semaine / plus tard, tes relances (« en attente de »), ta charge sur 10 jours ouvrés, report en +1j / +1s.
 
 Node.js ≥ 20.11. Sous Node ≥ 22.13, l'app utilise la base SQLite intégrée à Node (`node:sqlite`) ; sous Node 20, elle bascule automatiquement sur `sql.js` (SQLite en WebAssembly, installé par `npm install`, sans compilation). Les données restent dans `data/pmapp.db` sur ton poste.
@@ -48,7 +50,7 @@ Même syntaxe partout. Tout est optionnel sauf le texte :
 
 Le mode `polling` n'a pas besoin d'URL publique : il suffit que le poste qui fait tourner l'app puisse joindre `api.telegram.org`. Si le proxy de l'entreprise bloque, fais tourner l'app sur un petit serveur ou une VM (avec `APP_PASSWORD`), ou utilise le mode `webhook`.
 
-Commandes : `/todo`, `/semaine`, `/retard`, `/attente`, `/projets`, `/p CRM`, `/inbox`, `/fait 12`, `/report 12 lundi`, `/aide`.
+Commandes : `/todo`, `/semaine`, `/retard`, `/attente`, `/projets`, `/p CRM`, `/inbox`, `/fait 12`, `/report 12 lundi`, `/rapport CRM`, `/aide`.
 Un texte long collé dans le bot (par exemple un mail partagé depuis Outlook mobile), ou un texte qui commence par `mail:`, est traité comme un mail : il arrive dans l'onglet *Mails* et le bot propose « Tout ajouter ».
 
 ## WhatsApp (optionnel)
@@ -74,6 +76,26 @@ L'extraction se fait par :
 
 Dans les deux cas, tu relis et ajustes les propositions (type, projet, porteur, échéance, priorité) avant de les ajouter.
 
+## Rétroplanning (projets TTM)
+
+Dans la fiche projet, coche **Deadline imposée (TTM)**, puis ajoute les étapes dans l'ordre avec leur durée en jours ouvrés, ou pars du **modèle TTM** et ajuste-le. L'app calcule à rebours depuis la deadline :
+
+- les dates de **démarrage et de fin au plus tard** de chaque étape (week-ends et jours fériés français exclus, lundi de Pâques, Ascension et Pentecôte compris) ;
+- la **marge** : jours ouvrés disponibles d'ici la deadline moins le travail restant. Pour une étape en cours, renseigne le *reste à faire* ; sinon toute sa durée est comptée ;
+- les étapes **en retard** : pas démarrée alors que son démarrage au plus tard est passé, ou pas terminée après sa fin au plus tard.
+
+L'onglet **Rétroplanning** montre tous les projets TTM sur un même axe de temps, triés par marge (la plus faible en premier). Les démarrages au plus tard apparaissent aussi dans les « Échéances à venir » du portefeuille.
+
+## Partager le statut d'un projet
+
+Bouton **Partager le statut** sur la page du projet :
+
+- **Rapport HTML** : santé calculée et statut déclaré, *message clé* (saisi dans la fiche projet), KPIs, points d'attention, rétroplanning, jalons, risques ouverts, actions en retard, échéances à 14 jours, décisions et changements des 30 derniers jours. Le fichier est autonome : il s'envoie tel quel, ou s'enregistre en PDF via *Imprimer*.
+- **Résumé texte** prêt à coller dans Teams, Outlook ou un chat.
+- **CSV** des actions du projet.
+
+Depuis le téléphone : `/rapport CODE` sur Telegram renvoie le même résumé texte.
+
 ## Comment la santé est calculée
 
 Chaque projet part de 100 points. Chaque signal retire des points et s'affiche avec son explication :
@@ -89,6 +111,8 @@ Chaque projet part de 100 points. Chaque signal retire des points et s'affiche a
 | Risque en hausse sur 14 jours | −8 chacun (max −16) |
 | Jalon dépassé | −10 chacun (max −20) |
 | Au moins 3 changements en 7 jours | −8 |
+| Rétroplanning : marge négative (marge de 5 j ouvrés ou moins) | −20 (−10) |
+| Rétroplanning : étape en retard | −6 chacune (max −18) |
 
 Un score ≥ 75 donne 🟢, de 50 à 74 🟠, en dessous de 50 🔴. Quand le statut déclaré est plus optimiste que le calcul, un signal le rappelle (projet « pastèque »).
 
@@ -102,6 +126,8 @@ src/
   parser.js        capture rapide (#projet @porteur dates !priorité r:/c:/w:)
   dates.js         dates relatives en français
   health.js        santé, alertes, risques en hausse, ToDo, charge
+  retro.js         rétroplanning en jours ouvrés (jours fériés français)
+  report.js        export du statut projet (HTML, texte)
   emailExtract.js  mail → éléments (heuristique locale + Claude)
   bot.js           logique conversationnelle commune Telegram / WhatsApp
   telegram.js      bot Telegram (polling ou webhook)

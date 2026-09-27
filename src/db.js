@@ -88,6 +88,18 @@ CREATE TABLE IF NOT EXISTS emails (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS retro_steps (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  duration_days INTEGER DEFAULT 5,   -- durée en jours ouvrés
+  owner TEXT DEFAULT '',
+  status TEXT DEFAULT 'todo',        -- todo / doing / done
+  remaining_days INTEGER,            -- reste à faire (étape en cours)
+  position INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -99,7 +111,25 @@ export function openDb(file) {
   const db = openSqlite(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  migrate(db);
   return createRepo(db);
+}
+
+// Colonnes ajoutées après la première version : ajoutées aux bases existantes.
+const COLUMNS = {
+  projects: {
+    ttm: 'INTEGER DEFAULT 0',         // deadline imposée → rétroplanning
+    status_note: "TEXT DEFAULT ''",   // message clé pour le reporting
+  },
+};
+
+function migrate(db) {
+  for (const [table, cols] of Object.entries(COLUMNS)) {
+    const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+    for (const [name, def] of Object.entries(cols)) {
+      if (!existing.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${def}`);
+    }
+  }
 }
 
 const plain = (row) => (row ? { ...row } : row);
@@ -107,16 +137,17 @@ const plainAll = (rows) => rows.map((r) => ({ ...r }));
 
 function pick(obj, keys) {
   const out = {};
-  for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k] === '' && k.endsWith('_date') ? null : obj[k];
+  for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k] === '' && (k.endsWith('_date') || k === 'deadline') ? null : obj[k];
   return out;
 }
 
 const FIELDS = {
-  projects: ['code', 'name', 'aliases', 'description', 'sponsor', 'phase', 'rag', 'progress', 'start_date', 'deadline', 'archived'],
+  projects: ['code', 'name', 'aliases', 'description', 'sponsor', 'phase', 'rag', 'progress', 'start_date', 'deadline', 'archived', 'ttm', 'status_note'],
   actions: ['project_id', 'title', 'details', 'owner', 'due_date', 'priority', 'status', 'source', 'source_ref'],
   risks: ['project_id', 'title', 'description', 'probability', 'impact', 'status', 'owner', 'mitigation', 'source'],
   journal: ['project_id', 'kind', 'text', 'source'],
   milestones: ['project_id', 'title', 'due_date', 'done'],
+  retro_steps: ['project_id', 'title', 'duration_days', 'owner', 'status', 'remaining_days', 'position'],
   emails: ['subject', 'sender', 'body', 'source', 'status'],
 };
 const TOUCH = new Set(['projects', 'actions', 'risks']);
@@ -272,6 +303,26 @@ function createRepo(db) {
     listMilestones(projectId) {
       if (projectId === undefined) return all('SELECT * FROM milestones ORDER BY due_date IS NULL, due_date');
       return all('SELECT * FROM milestones WHERE project_id = ? ORDER BY due_date IS NULL, due_date', projectId);
+    },
+
+    // --- rétroplanning
+    listRetroSteps(projectId) {
+      return all('SELECT * FROM retro_steps WHERE project_id = ? ORDER BY position, id', projectId);
+    },
+    addRetroStep(data) {
+      const max = db.prepare('SELECT COALESCE(MAX(position), 0) AS m FROM retro_steps WHERE project_id = ?').get(data.project_id).m;
+      return insert('retro_steps', { ...data, position: data.position ?? max + 1 });
+    },
+    // Déplace une étape d'un cran (-1 = plus tôt, +1 = plus tard) en renumérotant la liste.
+    moveRetroStep(id, delta) {
+      const step = get('retro_steps', id);
+      if (!step) return null;
+      const list = repo.listRetroSteps(step.project_id);
+      const i = list.findIndex((s) => s.id === id);
+      const j = i + delta;
+      if (j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]];
+      list.forEach((s, k) => db.prepare('UPDATE retro_steps SET position = ? WHERE id = ?').run(k + 1, s.id));
+      return get('retro_steps', id);
     },
 
     // --- mails en attente de traitement

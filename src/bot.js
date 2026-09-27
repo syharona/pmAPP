@@ -4,7 +4,8 @@ import { captureContext, deleteItem, moveItem, saveItem } from './capture.js';
 import { addDays, formatShort, todayISO } from './dates.js';
 import { heuristicExtract } from './emailExtract.js';
 import { HELP_TEXT, parseCapture } from './parser.js';
-import { portfolio, todo } from './health.js';
+import { portfolio, projectDashboard, todo } from './health.js';
+import { renderText, reportContent } from './report.js';
 
 const KIND_LABEL = { action: 'Action', risk: 'Risque', change: 'Changement', decision: 'Décision', note: 'Note' };
 const PRIO = { critical: '🔴 ', high: '🟠 ', normal: '', low: '' };
@@ -63,7 +64,7 @@ export function handleText(repo, rawText, { channel = 'telegram', ref = '' } = {
       case 'start':
       case 'aide':
       case 'help':
-        return { text: HELP_TEXT + '\n\nCommandes : /todo /retard /semaine /attente /projets /inbox /fait <n°> /report <n°> <date> /p <CODE>' };
+        return { text: HELP_TEXT + '\n\nCommandes : /todo /retard /semaine /attente /projets /inbox /fait <n°> /report <n°> <date> /p <CODE> /rapport <CODE>' };
       case 'todo':
       case 'jour': {
         const t = todo(repo, today);
@@ -108,6 +109,13 @@ export function handleText(repo, rawText, { channel = 'telegram', ref = '' } = {
         return {
           text: `${HEALTH[m.health]} ${p.code} — ${p.name}\nSanté ${m.score}/100 · deadline ${p.deadline ? formatShort(p.deadline) : '?'} (${m.daysLeft ?? '?'} j) · avancement ${p.progress} %\n${m.signals.map((s) => '• ' + s.text).join('\n') || '• RAS'}`,
         };
+      }
+      case 'rapport':
+      case 'statut': {
+        const p = repo.listProjects().find((x) => x.code.toLowerCase() === arg.toLowerCase());
+        if (!p) return { text: `Usage : /rapport <CODE> (ex. /rapport CRM)` };
+        const d = projectDashboard(repo, p.id, today);
+        return { text: renderText(reportContent(d, { meName: repo.getSettings().me_name, today })) };
       }
       case 'inbox': {
         const inbox = repo.listActions({ projectId: null, open: true });

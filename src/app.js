@@ -8,6 +8,8 @@ import { extractFromEmail } from './emailExtract.js';
 import { portfolio, projectDashboard, todo } from './health.js';
 import { parseCapture } from './parser.js';
 import { addDays, todayISO } from './dates.js';
+import { TTM_TEMPLATE } from './retro.js';
+import { renderHtml, renderText, reportContent } from './report.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.webmanifest': 'application/manifest+json' };
@@ -69,6 +71,7 @@ const ENUMS = {
   priority: ['low', 'normal', 'high', 'critical'],
   status: ['todo', 'doing', 'waiting', 'done', 'cancelled'],
   riskStatus: ['open', 'mitigating', 'closed', 'occurred'],
+  stepStatus: ['todo', 'doing', 'done'],
   rag: ['green', 'amber', 'red'],
 };
 function check(value, list, field) {
@@ -159,6 +162,57 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
   route('DELETE', '/api/projects/:id', (req, res, p) => {
     must(repo.get('projects', id(p)));
     return repo.update('projects', id(p), { archived: 1 });
+  });
+
+  // ------------------------------------------------------------ rétroplanning
+  const duration = (v) => {
+    const n = Math.round(Number(v));
+    if (!Number.isFinite(n) || n < 1 || n > 1000) throw new HttpError(400, 'Durée invalide (1 à 1000 j ouvrés)');
+    return n;
+  };
+  route('POST', '/api/projects/:id/retro', (req, res, p, body) => {
+    must(repo.get('projects', id(p)));
+    if (!body.title) throw new HttpError(400, 'Titre obligatoire');
+    return repo.addRetroStep({ project_id: id(p), title: body.title, duration_days: duration(body.duration_days ?? 5), owner: body.owner || '' });
+  });
+  route('POST', '/api/projects/:id/retro/template', (req, res, p) => {
+    const project = must(repo.get('projects', id(p)));
+    if (repo.listRetroSteps(project.id).length) throw new HttpError(409, 'Le rétroplanning contient déjà des étapes');
+    for (const st of TTM_TEMPLATE) repo.addRetroStep({ project_id: project.id, ...st });
+    if (!project.ttm) repo.update('projects', project.id, { ttm: 1 });
+    return repo.listRetroSteps(project.id);
+  });
+  route('PATCH', '/api/retro-steps/:id', (req, res, p, body) => {
+    check(body.status, ENUMS.stepStatus, 'status');
+    if (body.duration_days !== undefined) body.duration_days = duration(body.duration_days);
+    if (body.remaining_days !== undefined) body.remaining_days = body.remaining_days === '' || body.remaining_days === null ? null : Math.max(0, Math.round(Number(body.remaining_days)) || 0);
+    delete body.project_id;
+    return must(repo.update('retro_steps', id(p), body));
+  });
+  route('POST', '/api/retro-steps/:id/move', (req, res, p, body) => must(repo.moveRetroStep(id(p), Number(body.delta) < 0 ? -1 : 1)));
+  route('DELETE', '/api/retro-steps/:id', (req, res, p) => ({ ok: repo.remove('retro_steps', id(p)) }));
+
+  // --------------------------------------------------------- export statut
+  const report = (p) => {
+    const d = must(projectDashboard(repo, id(p), todayISO()));
+    return reportContent(d, { meName: repo.getSettings().me_name, today: todayISO() });
+  };
+  const fileName = (c, ext) => `statut-${c.project.code}-${c.today}.${ext}`.replace(/[^\w.-]/g, '_');
+  route('GET', '/api/projects/:id/report.html', (req, res, p, body, q) => {
+    const c = report(p);
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
+      ...(q.get('download') ? { 'content-disposition': `attachment; filename="${fileName(c, 'html')}"` } : {}),
+    });
+    res.end(renderHtml(c));
+  });
+  route('GET', '/api/projects/:id/report.txt', (req, res, p) => renderText(report(p)));
+  route('GET', '/api/projects/:id/actions.csv', (req, res, p) => {
+    const project = must(repo.get('projects', id(p)));
+    const csv = toCsv(repo.listActions({ projectId: project.id }), ['id', 'title', 'owner', 'due_date', 'priority', 'status', 'source', 'created_at', 'done_at', 'details']);
+    res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="actions-${project.code.replace(/[^\w-]/g, '_')}.csv"` });
+    res.end(csv);
   });
 
   // ------------------------------------------------------------------ actions
