@@ -17,9 +17,11 @@ Node.js ≥ 20.11. Sous Node ≥ 22.13, l'app utilise la base SQLite intégrée 
 ```bash
 cp .env.example .env      # puis renseigne ce dont tu as besoin
 npm install               # sql.js (requis sous Node 20) + SDK Claude optionnel (extraction IA des mails)
-npm run seed              # optionnel : données de démonstration
+npm run seed              # optionnel : données de démonstration (npm run seed:clear pour les retirer)
 npm start                 # → http://127.0.0.1:3000
 ```
+
+**Retirer les données de démo** : bouton *Réglages → Données de démonstration*, ou `npm run seed:clear` (app arrêtée ; ajoute `-- --yes` pour ne pas confirmer). Seuls les projets de démo (et tout ce qu'ils contiennent), l'action de démo de l'Inbox et le mail de démo sont supprimés : tes propres projets et tes réglages ne sont pas touchés.
 
 `npm test` lance les tests (`PMAPP_SQLITE=sqljs npm test` force le moteur sql.js). Node 20 n'étant plus maintenu, passer à Node 22 LTS reste recommandé quand c'est possible.
 

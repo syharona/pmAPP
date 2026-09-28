@@ -9,6 +9,7 @@ import { portfolio, projectDashboard, todo } from './health.js';
 import { parseCapture } from './parser.js';
 import { addDays, todayISO } from './dates.js';
 import { TTM_TEMPLATE } from './retro.js';
+import { clearDemoData, describeCounts, findDemoData } from './demo.js';
 import { renderHtml, renderText, reportContent } from './report.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -357,6 +358,13 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
     },
   }));
   route('PUT', '/api/settings', (req, res, p, body) => repo.setSettings({ me_name: body.me_name ?? 'Moi', me_aliases: body.me_aliases ?? '' }));
+
+  // ------------------------------------------------------- données de démo
+  route('GET', '/api/demo', () => {
+    const found = findDemoData(repo);
+    return { ...found, label: Object.values(found.counts).some(Boolean) ? describeCounts(found.counts) : '' };
+  });
+  route('POST', '/api/demo/clear', () => ({ counts: clearDemoData(repo) }));
 
   // ------------------------------------------------------------------ export
   route('GET', '/api/export/actions.csv', (req, res) => {

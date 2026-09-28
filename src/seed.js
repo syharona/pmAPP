@@ -96,5 +96,11 @@ Paul`,
   source: 'demo',
 });
 
-repo.setSettings({ me_name: 'Moi', me_aliases: '' });
-console.log(`Démo créée : ${projects.length} projets.`);
+// Mémorise ce qui a été créé, pour pouvoir le retirer proprement (npm run seed:clear ou Réglages).
+repo.setSettings({
+  demo_data: JSON.stringify({
+    projects: projects.map((p) => p.id),
+    actions: repo.all('SELECT id FROM actions WHERE project_id IS NULL').map((a) => a.id),
+  }),
+});
+console.log(`Démo créée : ${projects.length} projets. Pour la retirer : npm run seed:clear (ou Réglages → Données de démonstration).`);

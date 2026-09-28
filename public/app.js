@@ -7,10 +7,12 @@ const state = { projects: [], settings: null };
 
 // ------------------------------------------------------------------ utils
 async function api(method, url, body) {
+  // Toute écriture part en JSON (le serveur l'exige, protection CSRF), même sans corps.
+  const write = method !== 'GET';
   const res = await fetch(url, {
     method,
-    headers: body !== undefined ? { 'content-type': 'application/json' } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers: write ? { 'content-type': 'application/json' } : {},
+    body: write ? JSON.stringify(body ?? {}) : undefined,
   });
   if (res.status === 401 && !url.startsWith('/api/login')) {
     renderLogin();
@@ -916,7 +918,18 @@ async function renderJournal() {
 }
 
 async function renderSettings() {
-  const s = (state.settings = await api('GET', '/api/settings'));
+  const [s, demo] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/demo')]);
+  state.settings = s;
+  const demoLabel = demo.label;
+  handlers['clear-demo'] = async () => {
+    const names = demo.projects.map((p) => `${p.code} — ${p.name}`).join('\n');
+    if (!confirm(`Supprimer les données de démonstration ?\n\n${names}\n\n${demoLabel}.\nTout ce que tu as ajouté dans ces projets sera supprimé aussi.`)) return;
+    await api('POST', '/api/demo/clear');
+    state.projects = [];
+    await loadProjects();
+    toast('Données de démonstration supprimées');
+    route();
+  };
   const i = s.integrations;
   const yes = (b) => (b ? '<span class="badge st-green"><span class="dot"></span>Actif</span>' : '<span class="badge">Non configuré</span>');
   handlers['save-settings'] = async () => {
@@ -951,6 +964,14 @@ async function renderSettings() {
         </tbody></table>
         ${i.auth ? '<p><button class="btn" id="logout">Se déconnecter</button></p>' : ''}
       </section>
+      ${
+        demoLabel
+          ? `<section class="card" style="grid-column:1/-1"><header><h2>Données de démonstration</h2></header>
+        <p style="margin-top:0">Projets de démo présents : ${demo.projects.map((p) => `<span class="tag">${esc(p.code)}</span>`).join(' ') || '—'} (${esc(demoLabel)}).</p>
+        <p class="small muted">Tes propres projets, actions et réglages ne sont pas touchés. Ce que tu as ajouté <b>dans</b> un projet de démo est supprimé avec lui.</p>
+        <button class="btn danger" data-act="clear-demo">Supprimer les données de démonstration</button></section>`
+          : ''
+      }
       <section class="card" style="grid-column:1/-1"><header><h2>Syntaxe de capture (web, Telegram, WhatsApp)</h2></header>
         <table class="table small"><tbody>
           <tr><td><code>#CRM relancer Paul sur le budget vendredi</code></td><td>Action pour moi, projet CRM, échéance vendredi</td></tr>
@@ -1042,5 +1063,9 @@ try {
   const theme = localStorage.getItem('theme');
   if (theme && theme !== 'auto') document.documentElement.dataset.theme = theme;
 } catch {}
+// Filet de sécurité : une erreur non gérée s'affiche au lieu d'échouer en silence.
+window.addEventListener('unhandledrejection', (e) => {
+  if (e.reason?.message !== 'auth') toast(e.reason?.message || 'Erreur inattendue');
+});
 window.addEventListener('hashchange', route);
 route();
