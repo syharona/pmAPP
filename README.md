@@ -6,20 +6,24 @@ Cockpit de portefeuille projets pour chef de projet / Scrum Master :
 - **Un dashboard par projet** : actions, matrice des risques probabilité × impact, signaux expliqués, jalons, journal des changements et décisions.
 - **Capture en 5 secondes depuis le téléphone** via un bot **Telegram** (ou **WhatsApp**) : un message = une action, sans formulaire.
 - **Mails → actions** : copier-coller un mail (ou le transférer au bot, ou via Power Automate), l'app propose les actions, risques et changements ; tu valides d'un clic.
+- **Rétroplanning** pour les projets à deadline imposée (TTM) : les étapes sont planifiées à rebours depuis la deadline, en jours ouvrés (week-ends et jours fériés français exclus), avec la marge restante et les étapes qui auraient déjà dû démarrer.
+- **Export du statut d'un projet** à tout moment : rapport HTML autonome (imprimable en PDF), résumé texte à coller dans Teams ou Outlook, CSV des actions.
 - **Mes actions (ToDo)** : en retard / aujourd'hui / semaine / plus tard, tes relances (« en attente de »), ta charge sur 10 jours ouvrés, report en +1j / +1s.
 
-Aucune dépendance obligatoire : Node.js ≥ 22.13 suffit (base SQLite intégrée à Node). Les données restent dans `data/pmapp.db` sur ton poste.
+Node.js ≥ 20.11. Sous Node ≥ 22.13, l'app utilise la base SQLite intégrée à Node (`node:sqlite`) ; sous Node 20, elle bascule automatiquement sur `sql.js` (SQLite en WebAssembly, installé par `npm install`, sans compilation). Les données restent dans `data/pmapp.db` sur ton poste.
 
 ## Démarrage
 
 ```bash
 cp .env.example .env      # puis renseigne ce dont tu as besoin
-npm install               # optionnel : n'installe que le SDK Claude (extraction IA des mails)
-npm run seed              # optionnel : données de démonstration
+npm install               # sql.js (requis sous Node 20) + SDK Claude optionnel (extraction IA des mails)
+npm run seed              # optionnel : données de démonstration (npm run seed:clear pour les retirer)
 npm start                 # → http://127.0.0.1:3000
 ```
 
-`npm test` lance les tests.
+**Retirer les données de démo** : bouton *Réglages → Données de démonstration*, ou `npm run seed:clear` (app arrêtée ; ajoute `-- --yes` pour ne pas confirmer). Seuls les projets de démo (et tout ce qu'ils contiennent), l'action de démo de l'Inbox et le mail de démo sont supprimés : tes propres projets et tes réglages ne sont pas touchés.
+
+`npm test` lance les tests (`PMAPP_SQLITE=sqljs npm test` force le moteur sql.js). Node 20 n'étant plus maintenu, passer à Node 22 LTS reste recommandé quand c'est possible.
 
 ## Capturer une action (web, Telegram, WhatsApp)
 
@@ -29,6 +33,7 @@ Même syntaxe partout. Tout est optionnel sauf le texte :
 |---|---|
 | `#CRM relancer Paul sur le budget vendredi` | Action pour moi, projet CRM, échéance vendredi |
 | `#CRM @Paul envoyer le planning demain !` | Action portée par Paul, priorité haute |
+| `#ERP ~recette préparer les jeux de test lundi` | Action rattachée à la phase « Recette… » du rétroplanning |
 | `w: #ERP @Sophie retour juridique 12/10` | « En attente de » Sophie → liste des relances |
 | `r: #ERP fournisseur en retard p4 i5` | Risque (probabilité 4 × impact 5) |
 | `c: #CRM go-live décalé au 15/11` | Changement consigné au journal du projet |
@@ -48,7 +53,7 @@ Même syntaxe partout. Tout est optionnel sauf le texte :
 
 Le mode `polling` n'a pas besoin d'URL publique : il suffit que le poste qui fait tourner l'app puisse joindre `api.telegram.org`. Si le proxy de l'entreprise bloque, fais tourner l'app sur un petit serveur ou une VM (avec `APP_PASSWORD`), ou utilise le mode `webhook`.
 
-Commandes : `/todo`, `/semaine`, `/retard`, `/attente`, `/projets`, `/p CRM`, `/inbox`, `/fait 12`, `/report 12 lundi`, `/aide`.
+Commandes : `/todo`, `/semaine`, `/retard`, `/attente`, `/projets`, `/p CRM`, `/inbox`, `/fait 12`, `/report 12 lundi`, `/rapport CRM`, `/aide`.
 Un texte long collé dans le bot (par exemple un mail partagé depuis Outlook mobile), ou un texte qui commence par `mail:`, est traité comme un mail : il arrive dans l'onglet *Mails* et le bot propose « Tout ajouter ».
 
 ## WhatsApp (optionnel)
@@ -74,6 +79,28 @@ L'extraction se fait par :
 
 Dans les deux cas, tu relis et ajustes les propositions (type, projet, porteur, échéance, priorité) avant de les ajouter.
 
+## Rétroplanning (projets TTM)
+
+Dans la fiche projet, coche **Deadline imposée (TTM)**, puis ajoute les étapes dans l'ordre avec leur durée en jours ouvrés, ou pars du **modèle TTM** et ajuste-le. L'app calcule à rebours depuis la deadline :
+
+- les dates de **démarrage et de fin au plus tard** de chaque étape (week-ends et jours fériés français exclus, lundi de Pâques, Ascension et Pentecôte compris) ;
+- la **marge** : jours ouvrés disponibles d'ici la deadline moins le travail restant. Pour une étape en cours, renseigne le *reste à faire* ; sinon toute sa durée est comptée ;
+- les étapes **en retard** : pas démarrée alors que son démarrage au plus tard est passé, ou pas terminée après sa fin au plus tard.
+
+**Actions rattachées à une phase** : dans le formulaire d'une action, choisis la phase du projet, ou tape `~recette` dans la capture rapide (Telegram compris). Pour chaque phase, le Gantt affiche le nombre d'actions ouvertes et en retard, et un clic filtre la liste des actions. Une action dont l'échéance tombe **après la fin au plus tard de sa phase** est signalée : c'est elle qui fait glisser le planning. Si l'action change de projet ou si la phase est supprimée, le lien est retiré.
+
+L'onglet **Rétroplanning** montre tous les projets TTM sur un même axe de temps, triés par marge (la plus faible en premier). Les démarrages au plus tard apparaissent aussi dans les « Échéances à venir » du portefeuille.
+
+## Partager le statut d'un projet
+
+Bouton **Partager le statut** sur la page du projet :
+
+- **Rapport HTML** : santé calculée et statut déclaré, *message clé* (saisi dans la fiche projet), KPIs, points d'attention, rétroplanning, jalons, risques ouverts, actions en retard, échéances à 14 jours, décisions et changements des 30 derniers jours. Le fichier est autonome : il s'envoie tel quel, ou s'enregistre en PDF via *Imprimer*.
+- **Résumé texte** prêt à coller dans Teams, Outlook ou un chat.
+- **CSV** des actions du projet.
+
+Depuis le téléphone : `/rapport CODE` sur Telegram renvoie le même résumé texte.
+
 ## Comment la santé est calculée
 
 Chaque projet part de 100 points. Chaque signal retire des points et s'affiche avec son explication :
@@ -89,6 +116,9 @@ Chaque projet part de 100 points. Chaque signal retire des points et s'affiche a
 | Risque en hausse sur 14 jours | −8 chacun (max −16) |
 | Jalon dépassé | −10 chacun (max −20) |
 | Au moins 3 changements en 7 jours | −8 |
+| Rétroplanning : marge négative (marge de 5 j ouvrés ou moins) | −20 (−10) |
+| Rétroplanning : étape en retard | −6 chacune (max −18) |
+| Action prévue après la fin au plus tard de sa phase | −4 chacune (max −12) |
 
 Un score ≥ 75 donne 🟢, de 50 à 74 🟠, en dessous de 50 🔴. Quand le statut déclaré est plus optimiste que le calcul, un signal le rappelle (projet « pastèque »).
 
@@ -102,6 +132,8 @@ src/
   parser.js        capture rapide (#projet @porteur dates !priorité r:/c:/w:)
   dates.js         dates relatives en français
   health.js        santé, alertes, risques en hausse, ToDo, charge
+  retro.js         rétroplanning en jours ouvrés (jours fériés français)
+  report.js        export du statut projet (HTML, texte)
   emailExtract.js  mail → éléments (heuristique locale + Claude)
   bot.js           logique conversationnelle commune Telegram / WhatsApp
   telegram.js      bot Telegram (polling ou webhook)

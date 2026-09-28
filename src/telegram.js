@@ -55,7 +55,7 @@ export function createTelegram(repo, { token, allowedChatIds = [], log = console
     const origin = msg.forward_origin?.sender_user?.first_name || msg.forward_from?.first_name || msg.forward_sender_name;
     const payload = origin && !text.startsWith('/') ? `${text}\n(transféré de ${origin})` : text;
     const reply = handleText(repo, payload, { channel: 'telegram', ref: `tg:${chatId}:${msg.message_id}` });
-    await api('sendMessage', { chat_id: chatId, text: reply.text, reply_markup: keyboard(reply.buttons), reply_to_message_id: msg.message_id });
+    await api('sendMessage', { chat_id: chatId, text: reply.text.slice(0, 4000), reply_markup: keyboard(reply.buttons), reply_to_message_id: msg.message_id });
   }
 
   let running = false;

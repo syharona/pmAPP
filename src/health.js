@@ -1,6 +1,7 @@
 // Calcul de la santé des projets et des signaux d'alerte ("vue godmode").
-import { addDays, diffDays, todayISO } from './dates.js';
+import { addDays, diffDays, formatShort, todayISO } from './dates.js';
 import { isMe } from './parser.js';
+import { computeRetro } from './retro.js';
 
 const RAG_LABEL = { green: 'Sous contrôle', amber: 'Vigilance', red: 'Critique' };
 const OPEN = (a) => a.status !== 'done' && a.status !== 'cancelled';
@@ -32,7 +33,7 @@ export function risingRisks(risks, history, now = new Date(), windowDays = 14) {
   return out.sort((a, b) => b.score - a.score || b.delta - a.delta);
 }
 
-export function projectMetrics(project, { actions, risks, milestones, journal, history }, today = todayISO(), now = new Date()) {
+export function projectMetrics(project, { actions, risks, milestones, journal, history, retroSteps = [] }, today = todayISO(), now = new Date()) {
   const open = actions.filter(OPEN);
   const overdue = open.filter((a) => a.due_date && a.due_date < today);
   const dueSoon = open.filter((a) => a.due_date && a.due_date >= today && a.due_date <= addDays(today, 7));
@@ -73,6 +74,34 @@ export function projectMetrics(project, { actions, risks, milestones, journal, h
   if (lateMilestones.length) hit(Math.min(20, lateMilestones.length * 10), 'warning', `${lateMilestones.length} jalon(s) dépassé(s)`);
   if (changes7d.length >= 3) hit(8, 'info', `${changes7d.length} changements en 7 j (instabilité du périmètre)`);
 
+  // Rétroplanning (projets à deadline imposée)
+  const retro = retroSteps.length ? computeRetro(retroSteps, project.deadline, today, project.start_date) : null;
+  if (retro && retro.buffer !== null && retro.remainingDays > 0) {
+    if (retro.buffer < 0) hit(20, 'critical', `Rétroplanning : il manque ${-retro.buffer} j ouvrés pour tenir la deadline`);
+    else if (retro.buffer <= 5) hit(10, 'warning', `Rétroplanning : marge de ${retro.buffer} j ouvrés seulement`);
+    const late = retro.lateSteps;
+    if (late.length) {
+      const first = late[0];
+      hit(
+        Math.min(18, late.length * 6),
+        late.some((st) => st.overdue) ? 'critical' : 'warning',
+        `Étape « ${first.title} » ${first.overdue ? `aurait dû finir le ${formatShort(first.latest_end)}` : `aurait dû démarrer le ${formatShort(first.latest_start)}`}${late.length > 1 ? ` (+${late.length - 1} autre(s))` : ''}`
+      );
+    }
+    // Actions rattachées aux phases
+    for (const st of retro.steps) {
+      const mine = open.filter((a) => a.step_id === st.id);
+      st.openActions = mine.length;
+      st.lateActions = mine.filter((a) => a.due_date && a.due_date < today).length;
+      st.beyondActions = mine.filter((a) => a.due_date && a.due_date > st.latest_end).map((a) => a.id);
+    }
+    const beyond = retro.steps.flatMap((st) => st.beyondActions);
+    if (beyond.length) hit(Math.min(12, beyond.length * 4), 'warning', `${beyond.length} action(s) prévue(s) après la fin au plus tard de leur phase`);
+    const closedWithOpen = retro.steps.filter((st) => st.status === 'done' && st.openActions);
+    if (closedWithOpen.length) signals.push({ level: 'info', text: `Phase « ${closedWithOpen[0].title} » terminée avec ${closedWithOpen[0].openActions} action(s) encore ouverte(s)`, points: 0 });
+    if (retro.infeasibleBy > 0) signals.push({ level: 'info', text: `Rétroplanning démarre ${retro.infeasibleBy} j ouvrés avant la date de début du projet`, points: 0 });
+  }
+
   score = Math.max(0, score);
   const health = score >= 75 ? 'green' : score >= 50 ? 'amber' : 'red';
   const ragOrder = { green: 0, amber: 1, red: 2 };
@@ -98,6 +127,7 @@ export function projectMetrics(project, { actions, risks, milestones, journal, h
     daysLeft,
     elapsedPct,
     scheduleGap,
+    retro,
   };
 }
 
@@ -109,6 +139,7 @@ function projectData(repo, projectId) {
     milestones: repo.listMilestones(projectId),
     journal: repo.listJournal({ projectId, sinceDays: 30, limit: 500 }),
     history: repo.riskHistory(risks.map((r) => r.id)),
+    retroSteps: repo.listRetroSteps(projectId),
   };
 }
 
@@ -145,6 +176,13 @@ export function portfolio(repo, today = todayISO(), now = new Date()) {
     const p = projects.find((x) => x.id === m.project_id);
     if (p && !m.done && m.due_date && m.due_date >= addDays(today, -14) && m.due_date <= addDays(today, 60))
       upcoming.push({ date: m.due_date, type: 'milestone', title: m.title, projectId: p.id, projectCode: p.code, late: m.due_date < today });
+  }
+  // Démarrages au plus tard des étapes de rétroplanning non commencées
+  for (const p of projects) {
+    for (const st of p.metrics.retro?.steps || []) {
+      if (st.status === 'todo' && st.latest_start >= addDays(today, -14) && st.latest_start <= addDays(today, 60))
+        upcoming.push({ date: st.latest_start, type: 'retro', title: `Démarrer au plus tard : ${st.title}`, projectId: p.id, projectCode: p.code, late: st.latest_start < today });
+    }
   }
   upcoming.sort((a, b) => a.date.localeCompare(b.date));
 

@@ -80,7 +80,7 @@ function withYear(today, m, d, y) {
 }
 
 // Mots de liaison retirés avec la date ("pour demain", "avant le 12/10"...)
-const LEAD = String.raw`(?:(?:pour|avant|d'ici|dici|au plus tard|deadline|echeance|due|le|a rendre)\s+)*`;
+const LEAD = String.raw`(?:\b(?:pour|avant|d'ici|dici|au plus tard|deadline|echeance|due|le|a rendre)\s+)*`;
 
 const RULES = [
   {

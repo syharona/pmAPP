@@ -4,7 +4,8 @@ import { captureContext, deleteItem, moveItem, saveItem } from './capture.js';
 import { addDays, formatShort, todayISO } from './dates.js';
 import { heuristicExtract } from './emailExtract.js';
 import { HELP_TEXT, parseCapture } from './parser.js';
-import { portfolio, todo } from './health.js';
+import { portfolio, projectDashboard, todo } from './health.js';
+import { renderText, reportContent } from './report.js';
 
 const KIND_LABEL = { action: 'Action', risk: 'Risque', change: 'Changement', decision: 'Décision', note: 'Note' };
 const PRIO = { critical: '🔴 ', high: '🟠 ', normal: '', low: '' };
@@ -23,6 +24,8 @@ function describe(kind, item, repo) {
   const parts = [`✅ ${KIND_LABEL[kind] || kind} #${item.id} enregistrée`];
   parts.push(`« ${item.title || item.text} »`);
   parts.push(`📁 ${p ? `${p.code} — ${p.name}` : 'Inbox (sans projet)'}`);
+  const step = kind === 'action' && item.step_id ? repo.get('retro_steps', item.step_id) : null;
+  if (step) parts.push(`▸ Phase : ${step.title}`);
   if (kind === 'action') {
     parts.push(`👤 ${item.owner === 'moi' ? 'Moi' : item.owner}${item.status === 'waiting' ? ' (en attente / à relancer)' : ''}`);
     if (item.due_date) parts.push(`📅 ${formatShort(item.due_date)}`);
@@ -63,7 +66,7 @@ export function handleText(repo, rawText, { channel = 'telegram', ref = '' } = {
       case 'start':
       case 'aide':
       case 'help':
-        return { text: HELP_TEXT + '\n\nCommandes : /todo /retard /semaine /attente /projets /inbox /fait <n°> /report <n°> <date> /p <CODE>' };
+        return { text: HELP_TEXT + '\n\nCommandes : /todo /retard /semaine /attente /projets /inbox /fait <n°> /report <n°> <date> /p <CODE> /rapport <CODE>' };
       case 'todo':
       case 'jour': {
         const t = todo(repo, today);
@@ -108,6 +111,13 @@ export function handleText(repo, rawText, { channel = 'telegram', ref = '' } = {
         return {
           text: `${HEALTH[m.health]} ${p.code} — ${p.name}\nSanté ${m.score}/100 · deadline ${p.deadline ? formatShort(p.deadline) : '?'} (${m.daysLeft ?? '?'} j) · avancement ${p.progress} %\n${m.signals.map((s) => '• ' + s.text).join('\n') || '• RAS'}`,
         };
+      }
+      case 'rapport':
+      case 'statut': {
+        const p = repo.listProjects().find((x) => x.code.toLowerCase() === arg.toLowerCase());
+        if (!p) return { text: `Usage : /rapport <CODE> (ex. /rapport CRM)` };
+        const d = projectDashboard(repo, p.id, today);
+        return { text: renderText(reportContent(d, { meName: repo.getSettings().me_name, today })) };
       }
       case 'inbox': {
         const inbox = repo.listActions({ projectId: null, open: true });
@@ -155,6 +165,7 @@ export function handleText(repo, rawText, { channel = 'telegram', ref = '' } = {
   const { kind, item } = saveItem(repo, parsed, { source: channel, sourceRef: ref });
   let reply = describe(kind, item, repo);
   if (parsed.unknownTag) reply += `\n❓ Projet « #${parsed.unknownTag} » inconnu`;
+  if (parsed.unknownStep) reply += `\n❓ Phase « ~${parsed.unknownStep} » introuvable dans ce projet`;
   const buttons = item.project_id
     ? [[{ text: '↩️ Annuler', data: `del:${kind}:${item.id}` }, ...(kind === 'action' ? [{ text: '✔️ Fait', data: `done:action:${item.id}` }] : [])]]
     : projectButtons(repo, kind, item.id);

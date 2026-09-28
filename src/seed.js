@@ -14,11 +14,18 @@ const d = (n) => addDays(t, n);
 
 const projects = [
   { code: 'CRM', name: 'Refonte CRM commercial', aliases: 'salesforce,crm', sponsor: 'Dir. commerciale', phase: 'Build', rag: 'green', progress: 45, start_date: d(-90), deadline: d(40) },
-  { code: 'ERP', name: 'Migration ERP finance', aliases: 'sap,s4', sponsor: 'DAF', phase: 'Recette', rag: 'green', progress: 60, start_date: d(-150), deadline: d(12) },
+  { code: 'ERP', name: 'Migration ERP finance', aliases: 'sap,s4', sponsor: 'DAF', phase: 'Recette', rag: 'green', progress: 60, start_date: d(-150), deadline: d(12), ttm: 1, status_note: 'Go-live maintenu, recette sous tension : arbitrage attendu en COPIL sur le périmètre paie.' },
+  { code: 'OFFRE', name: 'Lancement offre Pro 2027', aliases: 'offre pro,lancement', sponsor: 'Dir. marketing', phase: 'Conception', rag: 'green', progress: 20, start_date: d(-30), deadline: d(95), ttm: 1 },
   { code: 'DATA', name: 'Plateforme data RH', aliases: 'datalake,rh', sponsor: 'DRH', phase: 'Cadrage', rag: 'amber', progress: 15, start_date: d(-20), deadline: d(120) },
   { code: 'M365', name: 'Déploiement Teams / M365', aliases: 'teams,sharepoint', sponsor: 'DSI', phase: 'Déploiement', rag: 'green', progress: 80, start_date: d(-200), deadline: d(25) },
 ].map((p) => repo.insert('projects', p));
-const [crm, erp, data, m365] = projects;
+const [crm, erp, offre, data, m365] = projects;
+
+// Rétroplannings (projets à deadline imposée)
+const retro = (project, steps) =>
+  steps.forEach(([title, duration_days, status = 'todo', owner = '', remaining_days = null]) => repo.addRetroStep({ project_id: project.id, title, duration_days, status, owner, remaining_days }));
+retro(erp, [['Recette lot comptabilité', 8, 'doing', 'Sophie', 5], ['Recette lot paie', 3], ['Go/no-go COPIL', 1], ['Bascule & mise en production', 2]]);
+retro(offre, [['Étude marché & pricing', 10, 'done'], ['Spécifications produit', 12, 'doing', 'Karim', 8], ['Développement', 30], ['Tests & conformité', 10], ['Formation forces de vente', 5], ['Lancement commercial', 1]]);
 
 const actions = [
   [crm.id, 'Valider les maquettes écran opportunités', 'moi', d(-2), 'high'],
@@ -35,6 +42,18 @@ const actions = [
 for (const [project_id, title, owner, due_date, priority, status = 'todo'] of actions) {
   repo.createAction({ project_id, title, owner, due_date, priority, status, source: 'web' });
 }
+
+// Rattachement de quelques actions aux phases du rétroplanning
+const linkToStep = (actionTitle, stepTitle) => {
+  const a = repo.all('SELECT id, project_id FROM actions WHERE title = ?', actionTitle)[0];
+  const st = a && repo.listRetroSteps(a.project_id).find((x) => x.title === stepTitle);
+  if (st) repo.update('actions', a.id, { step_id: st.id });
+};
+linkToStep('PV de recette lot comptabilité', 'Recette lot comptabilité');
+linkToStep('Relancer le fournisseur sur les correctifs recette', 'Recette lot paie');
+linkToStep('Préparer le comité de pilotage go/no-go', 'Go/no-go COPIL');
+repo.createAction({ project_id: erp.id, title: 'Plan de bascule détaillé', owner: 'moi', due_date: d(14), priority: 'high', source: 'web' });
+linkToStep('Plan de bascule détaillé', 'Bascule & mise en production');
 
 const risks = [
   [erp.id, 'Correctifs fournisseur livrés trop tard pour la recette', 4, 5],
@@ -77,5 +96,11 @@ Paul`,
   source: 'demo',
 });
 
-repo.setSettings({ me_name: 'Moi', me_aliases: '' });
-console.log(`Démo créée : ${projects.length} projets.`);
+// Mémorise ce qui a été créé, pour pouvoir le retirer proprement (npm run seed:clear ou Réglages).
+repo.setSettings({
+  demo_data: JSON.stringify({
+    projects: projects.map((p) => p.id),
+    actions: repo.all('SELECT id FROM actions WHERE project_id IS NULL').map((a) => a.id),
+  }),
+});
+console.log(`Démo créée : ${projects.length} projets. Pour la retirer : npm run seed:clear (ou Réglages → Données de démonstration).`);

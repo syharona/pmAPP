@@ -5,15 +5,19 @@
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=22.13"
+    "node": ">=20.11"
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/server.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
     "seed": "node --disable-warning=ExperimentalWarning src/seed.js",
+    "seed:clear": "node --disable-warning=ExperimentalWarning src/seed-clear.js",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
   },
   "optionalDependencies": {
     "@anthropic-ai/sdk": "^0.128.0"
+  },
+  "dependencies": {
+    "sql.js": "^1.14.2"
   }
 }
