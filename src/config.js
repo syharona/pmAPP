@@ -31,6 +31,7 @@ export const config = {
   timezone: process.env.TZ,
   // Derrière un proxy (Render…) : adresse IP du client et HTTPS lus dans les en-têtes X-Forwarded-*.
   trustProxy: process.env.TRUST_PROXY === '1' || Boolean(process.env.RENDER),
+  proxyHops: Number(process.env.TRUST_PROXY_HOPS) || 1,
   dbPath: process.env.DB_PATH || path.resolve(process.cwd(), 'data', 'pmapp.db'),
   appPassword: process.env.APP_PASSWORD || '',
   // Facultatif : à défaut, un secret aléatoire est généré et conservé dans la base.

@@ -200,7 +200,7 @@ L'app héberge des données de projets de ton entreprise et des mails, qui conti
   - Le cookie est signé, `HttpOnly`, `SameSite=Strict`, et `Secure` en HTTPS. Il est valable 30 jours.
   - Le secret de signature est aléatoire et conservé dans la base, sauf si `SESSION_SECRET` est défini. Il n'est jamais renvoyé par l'API ni exporté.
   - *Réglages → Déconnecter tous les autres appareils* invalide toutes les sessions, sauf la tienne (par exemple en cas de téléphone perdu).
-- **Force brute :** après 5 échecs de connexion en 15 minutes depuis une même adresse, elle est bloquée pendant 15 minutes. Chaque échec est aussi ralenti.
+- **Force brute :** après 5 échecs de connexion en 15 minutes depuis une même adresse, elle est bloquée pendant 15 minutes. Chaque échec est aussi ralenti, et au-delà de 100 échecs par heure (toutes adresses confondues), les connexions sont suspendues. L'adresse du client est celle ajoutée par le proxy (la plus à droite de `X-Forwarded-For`), pas celle que le client peut écrire lui-même. Si plusieurs proxys sont placés devant l'app, renseigne leur nombre dans `TRUST_PROXY_HOPS`.
 - **Bots et intégrations :**
   - Les bots n'acceptent que les chats et numéros de leur liste blanche.
   - Le webhook Telegram vérifie son jeton secret, le webhook WhatsApp la signature `X-Hub-Signature-256`.
