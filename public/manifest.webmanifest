@@ -1,0 +1,21 @@
+{
+  "name": "PM Cockpit",
+  "short_name": "PM Cockpit",
+  "description": "Portefeuille projets, actions, risques et rétroplanning.",
+  "lang": "fr",
+  "start_url": "/#/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f9f9f7",
+  "theme_color": "#256abf",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "Mes actions", "url": "/#/todo" },
+    { "name": "Rétroplanning", "url": "/#/retro" }
+  ]
+}

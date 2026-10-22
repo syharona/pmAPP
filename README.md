@@ -134,19 +134,76 @@ src/
   health.js        santé, alertes, risques en hausse, ToDo, charge
   retro.js         rétroplanning en jours ouvrés (jours fériés français)
   report.js        export du statut projet (HTML, texte)
+  backup.js        sauvegarde / restauration JSON, sauvegardes quotidiennes
+  demo.js          repérage et retrait des données de démonstration
   emailExtract.js  mail → éléments (heuristique locale + Claude)
   bot.js           logique conversationnelle commune Telegram / WhatsApp
   telegram.js      bot Telegram (polling ou webhook)
   whatsapp.js      webhook WhatsApp Business Cloud
   seed.js          données de démonstration
-public/            interface web (HTML/CSS/JS, sans build)
+public/            interface web (HTML/CSS/JS, sans build), manifeste et service worker (PWA)
+render.yaml        déploiement Render (Blueprint)
 test/              tests (node --test)
 ```
 
 Export CSV des actions (compatible Excel) : *Réglages → Exporter*.
 
+## Mettre en ligne sur Render
+
+L'app est un serveur Node qui tourne en continu, avec une base SQLite sur disque. Il lui faut donc un hébergeur qui garde le serveur allumé et propose un **disque persistant**. Render convient, tout comme Railway, Fly.io ou un petit VPS. En revanche, les plateformes « serverless » comme Netlify ou Vercel effaceraient la base.
+
+1. **Fusionner** la branche dans `main` sur GitHub : Render déploie `main`.
+2. Sur [render.com](https://render.com) : **New + → Blueprint**, puis choisis le dépôt `pmAPP`. Render lit `render.yaml` et prépare :
+   - un service web Node en région Francfort (UE), sur l'offre `starter` ;
+   - un disque de 1 Go monté sur `/var/data`, qui contient la base `pmapp.db` et les sauvegardes quotidiennes ;
+   - une vérification de santé sur `/api/health`.
+3. Render demande les variables marquées « à saisir » :
+   - `APP_PASSWORD` : **obligatoire**, 12 caractères minimum (l'app refuse de démarrer sinon). Prends une longue phrase de passe, gérée par un gestionnaire de mots de passe.
+   - `TELEGRAM_BOT_TOKEN` et `TELEGRAM_ALLOWED_CHAT_IDS`, si tu utilises le bot. Il reste en mode `polling` : aucune URL de webhook à configurer.
+   - `ANTHROPIC_API_KEY`, pour l'extraction des mails par Claude ; `INGEST_TOKEN` (24 caractères minimum), pour Power Automate. Les deux sont facultatives.
+4. Une fois déployée, ouvre l'URL `https://….onrender.com`, connecte-toi, puis installe l'app (voir ci-dessous).
+5. Pour récupérer tes données locales : télécharge une sauvegarde depuis l'app locale (*Réglages → Télécharger une sauvegarde complète*), puis restaure-la sur l'app en ligne.
+
+À vérifier sur la page de tarifs de Render : le disque persistant suppose une offre payante (d'où `plan: starter`), et une instance gratuite se met en veille et ne garde pas ses fichiers. Avec un disque, Render arrête l'ancienne version avant de lancer la nouvelle : quelques secondes d'indisponibilité à chaque déploiement.
+
+### Installer l'app (PWA)
+
+Une fois en ligne (HTTPS), l'app s'installe comme une application :
+- **iPhone** : dans Safari, *Partager → Sur l'écran d'accueil* ;
+- **Android** : dans Chrome, menu → *Installer l'application* ;
+- **PC** : icône d'installation dans la barre d'adresse de Chrome ou Edge.
+
+L'interface reste affichable hors connexion, mais les données nécessitent le réseau.
+
+### Fuseau horaire
+
+Les échéances (« aujourd'hui », « demain », retards) se calculent dans le fuseau `APP_TIMEZONE` (`Europe/Paris` par défaut), même si le serveur tourne en UTC.
+
+### Sauvegardes
+
+- **Automatique :** une sauvegarde JSON par jour, dans le dossier `backups/` à côté de la base. Les 14 dernières sont conservées.
+- **Manuelle :** *Réglages → Télécharger une sauvegarde complète*. Garde régulièrement une copie hors du serveur : les sauvegardes automatiques sont sur le même disque que la base.
+- **Restauration :** *Réglages → Restaurer depuis un fichier*. Elle **remplace** toutes les données, après confirmation. Le secret de session de l'installation n'est jamais exporté.
+
+### Confidentialité
+
+L'app héberge des données de projets de ton entreprise et des mails, qui contiennent des données personnelles (RGPD). Vérifie que ta société autorise ce type d'hébergement. L'extraction par Claude envoie aussi le contenu des mails à l'API d'Anthropic ; le moteur local, lui, garde tout sur le serveur.
+
 ## Sécurité
 
-- Par défaut, l'app n'écoute que sur `127.0.0.1`. Si tu l'ouvres au réseau, définis `APP_PASSWORD` (cookie de session signé, HttpOnly, SameSite=Strict).
-- Les bots n'acceptent que les chats et numéros de la liste blanche. Le webhook Telegram vérifie son jeton secret, le webhook WhatsApp la signature `X-Hub-Signature-256`.
-- L'ingestion de mails exige `INGEST_TOKEN`.
+- **En local :** l'app n'écoute que sur `127.0.0.1` ; le mot de passe est facultatif.
+- **En ligne** (`NODE_ENV=production` ou `HOST` autre que localhost), l'app **refuse de démarrer** dans ces cas :
+  - `APP_PASSWORD` absent ou de moins de 12 caractères ;
+  - jetons trop courts (`INGEST_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`) ;
+  - WhatsApp configuré sans `WHATSAPP_APP_SECRET`.
+- **Sessions :**
+  - Le cookie est signé, `HttpOnly`, `SameSite=Strict`, et `Secure` en HTTPS. Il est valable 30 jours.
+  - Le secret de signature est aléatoire et conservé dans la base, sauf si `SESSION_SECRET` est défini. Il n'est jamais renvoyé par l'API ni exporté.
+  - *Réglages → Déconnecter tous les autres appareils* invalide toutes les sessions, sauf la tienne (par exemple en cas de téléphone perdu).
+- **Force brute :** après 5 échecs de connexion en 15 minutes depuis une même adresse, elle est bloquée pendant 15 minutes. Chaque échec est aussi ralenti.
+- **Bots et intégrations :**
+  - Les bots n'acceptent que les chats et numéros de leur liste blanche.
+  - Le webhook Telegram vérifie son jeton secret, le webhook WhatsApp la signature `X-Hub-Signature-256`.
+  - L'ingestion de mails exige `INGEST_TOKEN`.
+- **Coût de l'IA :** au plus 40 extractions de mails par Claude par heure, pour protéger la facture de l'API.
+- **En-têtes de sécurité :** CSP stricte, `nosniff`, `no-referrer`, et HSTS en HTTPS.
