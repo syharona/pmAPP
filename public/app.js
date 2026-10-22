@@ -953,16 +953,21 @@ async function renderSettings() {
         <div class="full"><button class="btn primary" data-act="save-settings">Enregistrer</button></div></div>
         <h3 style="margin-top:16px">Thème</h3><div class="seg" style="margin-top:6px">${['auto', 'light', 'dark'].map((v) => `<button data-act="theme" data-v="${v}">${{ auto: 'Auto', light: 'Clair', dark: 'Sombre' }[v]}</button>`).join('')}</div>
         <h3 style="margin-top:16px">Export</h3><p><a class="btn" href="/api/export/actions.csv">Exporter toutes les actions (CSV / Excel)</a></p>
+        <h3 style="margin-top:16px">Sauvegarde</h3>
+        <p class="small muted" style="margin:4px 0 8px">Une sauvegarde automatique est faite chaque jour (14 jours conservés, dossier <code>backups</code> à côté de la base). Télécharge aussi une copie de temps en temps : elle sera hors du serveur.</p>
+        <div class="row"><a class="btn" href="/api/backup">Télécharger une sauvegarde complète</a>
+        <label class="btn" for="restore-file">Restaurer depuis un fichier…</label><input type="file" id="restore-file" accept="application/json,.json" class="hidden"></div>
       </section>
       <section class="card"><header><h2>Intégrations</h2></header>
         <table class="table"><tbody>
-          <tr><td>Telegram</td><td>${yes(i.telegram)}</td><td class="small muted">${i.telegram ? `mode ${esc(i.telegramMode)} · ${i.telegramChats} chat(s) autorisé(s)` : 'TELEGRAM_BOT_TOKEN dans .env'}</td></tr>
+          <tr><td>Telegram</td><td>${yes(i.telegram)}</td><td class="small muted">${i.telegram ? `mode ${esc(i.telegramMode)} · ${i.telegramChats} chat(s) autorisé(s)` : 'variable TELEGRAM_BOT_TOKEN'}</td></tr>
           <tr><td>WhatsApp</td><td>${yes(i.whatsapp)}</td><td class="small muted">API WhatsApp Business Cloud (URL publique requise)</td></tr>
-          <tr><td>IA mails (Claude)</td><td>${yes(i.claude)}</td><td class="small muted">${i.claude ? esc(i.claudeModel) : 'ANTHROPIC_API_KEY dans .env'}</td></tr>
+          <tr><td>IA mails (Claude)</td><td>${yes(i.claude)}</td><td class="small muted">${i.claude ? esc(i.claudeModel) : 'variable ANTHROPIC_API_KEY'}</td></tr>
           <tr><td>Ingestion mails (Power Automate)</td><td>${yes(i.ingest)}</td><td class="small muted">POST /api/ingest/email + INGEST_TOKEN</td></tr>
           <tr><td>Mot de passe web</td><td>${yes(i.auth)}</td><td class="small muted">APP_PASSWORD</td></tr>
         </tbody></table>
-        ${i.auth ? '<p><button class="btn" id="logout">Se déconnecter</button></p>' : ''}
+        ${i.auth ? '<p class="row"><button class="btn" id="logout">Se déconnecter</button><button class="btn" id="logout-all" title="Invalide toutes les sessions ouvertes, sauf celle-ci">Déconnecter tous les autres appareils</button></p>' : ''}
+        <p class="small muted">Fuseau horaire des échéances : ${esc(i.timezone)} (variable APP_TIMEZONE)</p>
       </section>
       ${
         demoLabel
@@ -987,6 +992,30 @@ async function renderSettings() {
         </tbody></table>
       </section>
     </div>`;
+  $('#logout-all')?.addEventListener('click', async () => {
+    if (!confirm('Déconnecter tous les autres appareils (téléphone, autres navigateurs) ?')) return;
+    await api('POST', '/api/logout-all');
+    toast('Les autres appareils sont déconnectés');
+  });
+  $('#restore-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      return toast("Ce fichier n'est pas un JSON valide");
+    }
+    const n = data?.tables?.projects?.length ?? '?';
+    const when = data?.exported_at ? new Date(data.exported_at).toLocaleString('fr-FR') : 'date inconnue';
+    if (!confirm(`Restaurer la sauvegarde du ${when} (${n} projet(s)) ?\n\nToutes les données actuelles seront REMPLACÉES. Télécharge d'abord une sauvegarde si tu as un doute.`)) return;
+    const r = await api('POST', '/api/restore', data);
+    state.projects = [];
+    await loadProjects();
+    toast(`Restauré : ${r.counts.projects} projet(s), ${r.counts.actions} action(s)`);
+    route();
+  });
   $('#logout')?.addEventListener('click', async () => {
     await api('POST', '/api/logout', {});
     location.reload();
@@ -1067,5 +1096,7 @@ try {
 window.addEventListener('unhandledrejection', (e) => {
   if (e.reason?.message !== 'auth') toast(e.reason?.message || 'Erreur inattendue');
 });
+// Application installable (PWA) : nécessite HTTPS, ou localhost.
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 window.addEventListener('hashchange', route);
 route();

@@ -1,5 +1,5 @@
 // Calcul de la santé des projets et des signaux d'alerte ("vue godmode").
-import { addDays, diffDays, formatShort, todayISO } from './dates.js';
+import { addDays, diffDays, formatShort, toISO, todayISO } from './dates.js';
 import { isMe } from './parser.js';
 import { computeRetro } from './retro.js';
 
@@ -228,7 +228,7 @@ export function todo(repo, today = todayISO()) {
     .map((a) => ({ ...a, needsNudge: Boolean(a.due_date && a.due_date <= addDays(today, 1)) }));
   const doneToday = repo
     .listActions({ status: 'done' })
-    .filter((a) => isMe(a.owner, me) && a.done_at && a.done_at.slice(0, 10) === new Date().toISOString().slice(0, 10));
+    .filter((a) => isMe(a.owner, me) && a.done_at && toISO(new Date(a.done_at)) === today); // done_at est en UTC
   return { today, groups, followUp, doneToday, load: loadByDay(mine, today) };
 }
 

@@ -15,14 +15,26 @@ function loadDotEnv(file) {
 
 loadDotEnv(path.resolve(process.cwd(), '.env'));
 
+// Les dates (« aujourd'hui », retards…) se calculent dans ce fuseau, même sur un serveur en UTC.
+process.env.TZ = process.env.APP_TIMEZONE || process.env.TZ || 'Europe/Paris';
+
+const host = process.env.HOST || '127.0.0.1';
+// Exposé = accessible depuis le réseau ou Internet : on durcit la configuration.
+const exposed = process.env.NODE_ENV === 'production' || !['127.0.0.1', 'localhost', '::1'].includes(host);
+
 const list = (v) => (v || '').split(',').map((s) => s.trim()).filter(Boolean);
 
 export const config = {
   port: Number(process.env.PORT || 3000),
-  host: process.env.HOST || '127.0.0.1',
+  host,
+  exposed,
+  timezone: process.env.TZ,
+  // Derrière un proxy (Render…) : adresse IP du client et HTTPS lus dans les en-têtes X-Forwarded-*.
+  trustProxy: process.env.TRUST_PROXY === '1' || Boolean(process.env.RENDER),
   dbPath: process.env.DB_PATH || path.resolve(process.cwd(), 'data', 'pmapp.db'),
   appPassword: process.env.APP_PASSWORD || '',
-  sessionSecret: process.env.SESSION_SECRET || process.env.APP_PASSWORD || 'pmapp-dev-secret',
+  // Facultatif : à défaut, un secret aléatoire est généré et conservé dans la base.
+  sessionSecret: process.env.SESSION_SECRET || '',
   ingestToken: process.env.INGEST_TOKEN || '',
   publicUrl: (process.env.PUBLIC_URL || '').replace(/\/$/, ''),
 
@@ -47,3 +59,16 @@ export const config = {
     model: process.env.ANTHROPIC_MODEL || 'claude-opus-5',
   },
 };
+
+/** Refuse une configuration dangereuse quand l'app est exposée. */
+export function configErrors(c = config) {
+  const errors = [];
+  if (!c.exposed) return errors;
+  if (c.appPassword.length < 12) errors.push('APP_PASSWORD est obligatoire en ligne (12 caractères minimum).');
+  if (c.sessionSecret && c.sessionSecret.length < 32) errors.push('SESSION_SECRET doit faire au moins 32 caractères (ou ne pas être défini).');
+  if (c.ingestToken && c.ingestToken.length < 24) errors.push('INGEST_TOKEN doit faire au moins 24 caractères.');
+  if (c.telegram.token && c.telegram.mode === 'webhook' && c.telegram.webhookSecret.length < 16)
+    errors.push('TELEGRAM_WEBHOOK_SECRET (16 caractères minimum) est obligatoire en mode webhook.');
+  if (c.whatsapp.token && !c.whatsapp.appSecret) errors.push('WHATSAPP_APP_SECRET est obligatoire en ligne (vérification de signature).');
+  return errors;
+}

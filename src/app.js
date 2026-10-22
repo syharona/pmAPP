@@ -10,10 +10,11 @@ import { parseCapture } from './parser.js';
 import { addDays, todayISO } from './dates.js';
 import { TTM_TEMPLATE } from './retro.js';
 import { clearDemoData, describeCounts, findDemoData } from './demo.js';
+import { exportAll, restoreAll } from './backup.js';
 import { renderHtml, renderText, reportContent } from './report.js';
 
 const PUBLIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.webmanifest': 'application/manifest+json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -28,12 +29,12 @@ function send(res, status, data, headers = {}) {
   res.end(body);
 }
 
-async function readBody(req) {
+async function readBody(req, max = 2_000_000) {
   const chunks = [];
   let size = 0;
   for await (const c of req) {
     size += c.length;
-    if (size > 2_000_000) throw new HttpError(413, 'Corps de requête trop volumineux');
+    if (size > max) throw new HttpError(413, 'Corps de requête trop volumineux');
     chunks.push(c);
   }
   return Buffer.concat(chunks);
@@ -108,26 +109,70 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
 
   // ------------------------------------------------------------------ auth
   const authEnabled = Boolean(config.appPassword);
+  // Secret de signature : SESSION_SECRET, sinon un secret aléatoire conservé dans la base
+  // (les sessions survivent aux redémarrages). L'« époque » permet de révoquer toutes les sessions.
+  const settings0 = repo.getSettings();
+  let secret = config.sessionSecret || settings0.session_secret;
+  if (!secret) {
+    secret = crypto.randomBytes(32).toString('base64url');
+    repo.setSettings({ session_secret: secret });
+  }
+  let epoch = settings0.session_epoch || '0';
+  const SESSION_DAYS = 30;
   const sessionToken = () => {
-    const exp = Date.now() + 30 * 86400000;
-    return `${exp}.${sign(config.sessionSecret, String(exp))}`;
+    const exp = String(Date.now() + SESSION_DAYS * 86400000);
+    return `${exp}.${sign(secret, `${exp}.${epoch}`)}`;
   };
   const isAuthed = (req) => {
     if (!authEnabled) return true;
-    const tok = cookies(req).pmapp_session || '';
-    const [exp, sig] = tok.split('.');
-    return Boolean(exp && sig && Number(exp) > Date.now() && safeEqual(sig, sign(config.sessionSecret, exp)));
+    const [exp, sig] = (cookies(req).pmapp_session || '').split('.');
+    return Boolean(exp && sig && Number(exp) > Date.now() && safeEqual(sig, sign(secret, `${exp}.${epoch}`)));
+  };
+  const isHttps = (req) => Boolean(req.socket.encrypted) || (config.trustProxy && String(req.headers['x-forwarded-proto'] || '').startsWith('https'));
+  const cookie = (req, value, maxAge) =>
+    `pmapp_session=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${isHttps(req) ? '; Secure' : ''}`;
+
+  // Anti-force brute : 5 échecs en 15 min depuis une même adresse → blocage 15 min.
+  const failures = new Map();
+  const WINDOW = 15 * 60 * 1000;
+  const clientIp = (req) =>
+    (config.trustProxy && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress || '?';
+  const lockedFor = (ip) => {
+    const f = failures.get(ip);
+    if (!f || Date.now() - f.first > WINDOW) return 0;
+    return f.count >= 5 ? Math.ceil((f.first + WINDOW - Date.now()) / 1000) : 0;
   };
 
+  route('GET', '/api/health', () => ({ ok: true }), { public: true });
   route('GET', '/api/session', (req) => ({ authenticated: isAuthed(req), authEnabled }), { public: true });
   route('POST', '/api/login', async (req, res, p, body) => {
     if (!authEnabled) return { ok: true };
-    if (!safeEqual(body.password || '', config.appPassword)) throw new HttpError(401, 'Mot de passe incorrect');
-    res.setHeader('set-cookie', `pmapp_session=${sessionToken()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 86400}`);
+    const ip = clientIp(req);
+    const wait = lockedFor(ip);
+    if (wait) {
+      res.setHeader('retry-after', String(wait));
+      throw new HttpError(429, `Trop de tentatives. Réessaie dans ${Math.ceil(wait / 60)} min.`);
+    }
+    if (!safeEqual(body.password || '', config.appPassword)) {
+      const f = failures.get(ip);
+      failures.set(ip, f && Date.now() - f.first <= WINDOW ? { ...f, count: f.count + 1 } : { first: Date.now(), count: 1 });
+      if (failures.size > 10000) failures.clear();
+      await new Promise((r) => setTimeout(r, 400)); // ralentit les essais en rafale
+      throw new HttpError(401, 'Mot de passe incorrect');
+    }
+    failures.delete(ip);
+    res.setHeader('set-cookie', cookie(req, sessionToken(), SESSION_DAYS * 86400));
     return { ok: true };
   }, { public: true });
   route('POST', '/api/logout', (req, res) => {
-    res.setHeader('set-cookie', 'pmapp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+    res.setHeader('set-cookie', cookie(req, '', 0));
+    return { ok: true };
+  });
+  // Déconnecte tous les appareils (téléphone perdu, poste partagé…) puis reconnecte celui-ci.
+  route('POST', '/api/logout-all', (req, res) => {
+    epoch = String(Number(epoch) + 1);
+    repo.setSettings({ session_epoch: epoch });
+    if (authEnabled) res.setHeader('set-cookie', cookie(req, sessionToken(), SESSION_DAYS * 86400));
     return { ok: true };
   });
 
@@ -311,11 +356,22 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
   route('POST', '/api/items/delete', (req, res, p, body) => ({ ok: deleteItem(repo, body.kind, Number(body.id)) }));
 
   // --------------------------------------------------------------------- mails
+  // Au plus 40 extractions par Claude par heure.
+  const aiCalls = [];
+  const aiQuota = () => {
+    const hourAgo = Date.now() - 3600000;
+    while (aiCalls.length && aiCalls[0] < hourAgo) aiCalls.shift();
+    if (aiCalls.length >= 40) return false;
+    aiCalls.push(Date.now());
+    return true;
+  };
   route('GET', '/api/emails', () => repo.listEmails('pending'));
   route('POST', '/api/emails/extract', async (req, res, p, body) => {
     if (!String(body.body || '').trim()) throw new HttpError(400, 'Colle le contenu du mail');
     const ctx = captureContext(repo);
-    const result = await extractFromEmail(body, ctx, { ...config.anthropic, disabled: body.engine === 'local' });
+    const useClaude = Boolean(config.anthropic.apiKey) && body.engine !== 'local';
+    if (useClaude && !aiQuota()) throw new HttpError(429, "Quota d'extractions IA atteint pour l'heure (protection de la facture API) ; utilise le moteur local.");
+    const result = await extractFromEmail(body, ctx, { ...config.anthropic, disabled: !useClaude });
     if (body.projectId) {
       for (const it of result.items) it.projectId ??= Number(body.projectId);
       result.projectId ??= Number(body.projectId);
@@ -344,8 +400,9 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
   route('POST', '/api/ingest/capture', (req, res, p, body) => quickCapture(repo, body.text || '', { source: body.source || 'api' }), { token: true });
 
   // ------------------------------------------------------------------ réglages
+  const PRIVATE_SETTINGS = new Set(['session_secret', 'session_epoch', 'demo_data']);
   route('GET', '/api/settings', () => ({
-    ...repo.getSettings(),
+    ...Object.fromEntries(Object.entries(repo.getSettings()).filter(([k]) => !PRIVATE_SETTINGS.has(k))),
     integrations: {
       telegram: Boolean(config.telegram.token),
       telegramMode: config.telegram.mode,
@@ -355,9 +412,20 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
       claudeModel: config.anthropic.model,
       ingest: Boolean(config.ingestToken),
       auth: authEnabled,
+      timezone: config.timezone,
     },
   }));
   route('PUT', '/api/settings', (req, res, p, body) => repo.setSettings({ me_name: body.me_name ?? 'Moi', me_aliases: body.me_aliases ?? '' }));
+
+  // -------------------------------------------------------------- sauvegarde
+  route('GET', '/api/backup', (req, res) => {
+    res.writeHead(200, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-disposition': `attachment; filename="pmapp-sauvegarde-${todayISO()}.json"`,
+    });
+    res.end(JSON.stringify(exportAll(repo)));
+  });
+  route('POST', '/api/restore', (req, res, p, body) => ({ counts: restoreAll(repo, body) }), { maxBody: 50_000_000 });
 
   // ------------------------------------------------------- données de démo
   route('GET', '/api/demo', () => {
@@ -411,6 +479,7 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
   return async function handler(req, res) {
     const url = new URL(req.url, 'http://localhost');
     res.setHeader('x-content-type-options', 'nosniff');
+    if (isHttps(req)) res.setHeader('strict-transport-security', 'max-age=31536000');
     res.setHeader('referrer-policy', 'no-referrer');
     try {
       if (!url.pathname.startsWith('/api/')) {
@@ -430,7 +499,7 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
         throw new HttpError(415, 'Content-Type application/json attendu');
       }
       const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(url.pathname.match(r.re)[i + 1])]));
-      const raw = req.method === 'GET' ? Buffer.alloc(0) : await readBody(req);
+      const raw = req.method === 'GET' ? Buffer.alloc(0) : await readBody(req, r.maxBody);
       const body = parseJson(raw);
       const out = await r.handler(req, res, params, body, url.searchParams, raw);
       if (!res.headersSent) send(res, 200, out ?? { ok: true });

@@ -1,0 +1,37 @@
+# Déploiement Render (Blueprint) : New + → Blueprint → choisir ce dépôt.
+# Un seul service web Node, avec un disque persistant pour la base SQLite et les sauvegardes.
+services:
+  - type: web
+    name: pm-cockpit
+    runtime: node
+    plan: starter            # le disque persistant nécessite une offre payante
+    region: frankfurt        # hébergement dans l'UE
+    branch: main
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: pmapp-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: DB_PATH
+        value: /var/data/pmapp.db
+      - key: APP_TIMEZONE
+        value: Europe/Paris
+      - key: APP_PASSWORD        # à saisir dans Render (12 caractères minimum)
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN  # facultatif
+        sync: false
+      - key: TELEGRAM_ALLOWED_CHAT_IDS
+        sync: false
+      - key: TELEGRAM_MODE
+        value: polling
+      - key: ANTHROPIC_API_KEY   # facultatif : extraction des mails par Claude
+        sync: false
+      - key: INGEST_TOKEN        # facultatif : ingestion de mails (Power Automate), 24 caractères minimum
+        sync: false
