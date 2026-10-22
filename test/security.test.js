@@ -56,6 +56,20 @@ test('connexion : cookie Secure derrière HTTPS, blocage après 5 échecs, sant�
   }
 });
 
+test('anti-force brute : X-Forwarded-For falsifié ne contourne pas le blocage, plafond global', async () => {
+  const s = await serve({ ...base, loginDelayMs: 0 });
+  try {
+    // Le client invente la 1re adresse ; le proxy ajoute la vraie (9.9.9.9) à la fin.
+    for (let i = 0; i < 5; i++) await s.call('POST', '/api/login', { password: 'faux' }, { 'x-forwarded-for': `10.0.0.${i}, 9.9.9.9` });
+    assert.equal((await s.call('POST', '/api/login', { password: 'faux' }, { 'x-forwarded-for': '10.0.0.99, 9.9.9.9' })).status, 429);
+    // Plafond global : 100 échecs par heure, même depuis des adresses toutes différentes
+    for (let i = 0; i < 95; i++) await s.call('POST', '/api/login', { password: 'faux' }, { 'x-forwarded-for': `20.0.${i >> 8}.${i & 255}` });
+    assert.equal((await s.call('POST', '/api/login', { password: base.appPassword }, { 'x-forwarded-for': '30.0.0.1' })).status, 429);
+  } finally {
+    s.close();
+  }
+});
+
 test('session : secret stocké, jamais exposé ; « déconnecter tous les appareils »', async () => {
   const s = await serve(base);
   try {
