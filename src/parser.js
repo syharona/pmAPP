@@ -58,6 +58,20 @@ export function guessProject(text, projects) {
   return hits.length === 1 ? hits[0] : null;
 }
 
+// Phase du rétroplanning : "~recette" → étape du projet dont le titre (ou un de ses mots) commence par "recette".
+export function findStep(token, projectId, steps) {
+  const t = norm(token);
+  if (!t || !projectId) return null;
+  const mine = steps.filter((st) => st.project_id === projectId);
+  const words = (st) => fold(st.title).split(/[^a-z0-9]+/).filter(Boolean);
+  return (
+    mine.find((st) => norm(st.title) === t) ||
+    mine.find((st) => norm(st.title).startsWith(t)) ||
+    mine.find((st) => words(st).some((w) => w.startsWith(t))) ||
+    null
+  );
+}
+
 export function isMe(owner, meAliases = []) {
   if (!owner) return false;
   const o = norm(owner);
@@ -74,7 +88,7 @@ function tidy(s) {
  * @param {{projects?: Array, today?: string, meAliases?: string[]}} ctx
  */
 export function parseCapture(input, ctx = {}) {
-  const { projects = [], today = todayISO(), meAliases = [] } = ctx;
+  const { projects = [], steps = [], today = todayISO(), meAliases = [] } = ctx;
   let text = String(input || '').replace(/\s+/g, ' ').trim();
   const result = {
     kind: 'action',
@@ -82,6 +96,9 @@ export function parseCapture(input, ctx = {}) {
     projectId: null,
     projectCode: null,
     unknownTag: null,
+    stepId: null,
+    stepTitle: null,
+    unknownStep: null,
     owner: null,
     due: null,
     priority: 'normal',
@@ -117,6 +134,13 @@ export function parseCapture(input, ctx = {}) {
     return ' ';
   });
 
+  // ~phase (résolue une fois le projet connu)
+  let stepToken = null;
+  text = text.replace(/(?:^|\s)~([\p{L}\p{N}_\-.]+)/gu, (all, tok) => {
+    stepToken ??= tok;
+    return ' ';
+  });
+
   // !priorité
   for (const { re, priority } of PRIORITY_TOKENS) {
     if (re.test(text)) {
@@ -148,6 +172,16 @@ export function parseCapture(input, ctx = {}) {
     }
   }
 
+  if (stepToken) {
+    const st = findStep(stepToken, result.projectId, steps);
+    if (st) {
+      result.stepId = st.id;
+      result.stepTitle = st.title;
+    } else {
+      result.unknownStep = stepToken;
+    }
+  }
+
   if (result.kind === 'waiting') {
     result.kind = 'action';
     result.status = 'waiting';
@@ -165,6 +199,7 @@ export function parseCapture(input, ctx = {}) {
 export const HELP_TEXT = `Capture rapide — écris naturellement :
 • Action : "#CRM relancer Paul sur le budget vendredi"
 • Pour quelqu'un : "#CRM @Paul envoyer le planning demain !"
+• Dans une phase : "#ERP ~recette préparer les jeux de test lundi"
 • En attente de : "w: #ERP @Sophie retour juridique 12/10"
 • Risque : "r: #ERP fournisseur en retard p4 i5"
 • Changement : "c: #CRM go-live décalé au 15/11"

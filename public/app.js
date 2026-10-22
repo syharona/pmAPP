@@ -7,10 +7,12 @@ const state = { projects: [], settings: null };
 
 // ------------------------------------------------------------------ utils
 async function api(method, url, body) {
+  // Toute écriture part en JSON (le serveur l'exige, protection CSRF), même sans corps.
+  const write = method !== 'GET';
   const res = await fetch(url, {
     method,
-    headers: body !== undefined ? { 'content-type': 'application/json' } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers: write ? { 'content-type': 'application/json' } : {},
+    body: write ? JSON.stringify(body ?? {}) : undefined,
   });
   if (res.status === 401 && !url.startsWith('/api/login')) {
     renderLogin();
@@ -125,6 +127,7 @@ capInput.addEventListener('input', () => {
     const chips = [
       `<span class="chip"><b>${KIND_LABEL[p.kind]}${p.status === 'waiting' ? ' (en attente)' : ''}</b></span>`,
       `<span class="chip ${proj ? '' : 'warn'}">📁 ${proj ? esc(proj.code) : p.unknownTag ? `#${esc(p.unknownTag)} inconnu → Inbox` : 'Inbox'}</span>`,
+      p.stepTitle ? `<span class="chip">▸ ${esc(p.stepTitle)}</span>` : p.unknownStep ? `<span class="chip warn">▸ ~${esc(p.unknownStep)} introuvable</span>` : '',
       p.kind === 'action' ? `<span class="chip">👤 ${ownerLabel(p.owner)}</span>` : '',
       p.due ? `<span class="chip">📅 ${fmtDate(p.due)}</span>` : '',
       p.priority !== 'normal' ? `<span class="chip">⚡ ${PRIO_LABEL[p.priority]}</span>` : '',
@@ -158,10 +161,17 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------- action modals
-function actionForm(a = {}) {
+const stepOptions = (steps, sel) =>
+  steps.length
+    ? `<option value="">— Aucune phase —</option>` + steps.map((st) => `<option value="${st.id}" ${Number(sel) === st.id ? 'selected' : ''}>${esc(st.title)}</option>`).join('')
+    : '<option value="">— Pas de rétroplanning —</option>';
+const loadSteps = (projectId) => (projectId ? api('GET', `/api/retro-steps?project=${projectId}`) : Promise.resolve([]));
+
+function actionForm(a = {}, steps = []) {
   return `<div class="form">
     <label class="full">Action<input name="title" required value="${esc(a.title)}"></label>
     <label>Projet<select name="project_id">${projectOptions(a.project_id)}</select></label>
+    <label>Phase (rétroplanning)<select name="step_id">${stepOptions(steps, a.step_id)}</select></label>
     <label>Porteur<input name="owner" value="${esc(a.owner ?? 'moi')}" placeholder="moi, Paul…"></label>
     <label>Échéance<input type="date" name="due_date" value="${esc(a.due_date || '')}"></label>
     <label>Priorité<select name="priority">${options(PRIO_LABEL, a.priority || 'normal')}</select></label>
@@ -170,10 +180,17 @@ function actionForm(a = {}) {
     ${a.id ? `<div class="full small muted">Créée ${fmtTs(a.created_at)} via ${esc(a.source)}${a.source_ref ? ` (${esc(a.source_ref)})` : ''}</div>` : ''}
   </div>`;
 }
-function editAction(a) {
-  modal(a.id ? `Action #${a.id}` : 'Nouvelle action', actionForm(a), {
+async function editAction(a) {
+  const steps = await loadSteps(a.project_id);
+  const dlg = modal(a.id ? `Action #${a.id}` : 'Nouvelle action', actionForm(a, steps), {
     extra: a.id ? '<button class="btn danger" value="delete" type="button" id="del-action">Supprimer</button>' : '',
     onSubmit: (data) => (a.id ? api('PATCH', `/api/actions/${a.id}`, data) : api('POST', '/api/actions', data)),
+  });
+  // Les phases proposées suivent le projet choisi.
+  const projectSel = $('[name=project_id]', dlg);
+  projectSel.addEventListener('change', async () => {
+    const stepSel = $('[name=step_id]', dlg);
+    stepSel.innerHTML = stepOptions(await loadSteps(Number(projectSel.value) || null), stepSel.value);
   });
   $('#del-action')?.addEventListener('click', async () => {
     if (!confirm('Supprimer cette action ?')) return;
@@ -218,6 +235,8 @@ function projectForm(p = {}) {
     <label>Deadline<input type="date" name="deadline" value="${esc(p.deadline || '')}"></label>
     <label>Statut déclaré<select name="rag">${options(RAG, p.rag || 'green')}</select></label>
     <label>Avancement (%)<input type="number" min="0" max="100" name="progress" value="${esc(p.progress ?? 0)}"></label>
+    <label class="full check-label"><input type="checkbox" name="ttm" ${p.ttm ? 'checked' : ''}> Deadline imposée (TTM) : planifier à rebours depuis la deadline (rétroplanning)</label>
+    <label class="full">Message clé pour le reporting (repris dans l'export du statut)<textarea name="status_note" rows="2" placeholder="Ex. Go-live maintenu au 07/10, recette sous tension : arbitrage attendu en COPIL">${esc(p.status_note)}</textarea></label>
     <label class="full">Description<textarea name="description" rows="2">${esc(p.description)}</textarea></label>
   </div>`;
 }
@@ -226,6 +245,7 @@ function editProject(p = {}) {
     extra: p.id ? '<button class="btn danger" type="button" id="archive-project">Archiver</button>' : '',
     onSubmit: async (data) => {
       data.progress = Number(data.progress) || 0;
+      data.ttm = data.ttm ? 1 : 0;
       const saved = p.id ? await api('PATCH', `/api/projects/${p.id}`, data) : await api('POST', '/api/projects', data);
       await loadProjects();
       if (!p.id) location.hash = `#/p/${saved.id}`;
@@ -273,7 +293,8 @@ const cache = { actions: new Map(), risks: new Map() };
 const remember = (kind, rows) => rows.forEach((r) => cache[kind].set(r.id, r));
 
 handlers['edit-action'] = (el) => editAction(cache.actions.get(Number(el.dataset.id)) || {});
-handlers['new-action'] = (el) => editAction({ project_id: el.dataset.project ? Number(el.dataset.project) : null });
+handlers['new-action'] = (el) =>
+  editAction({ project_id: el.dataset.project ? Number(el.dataset.project) : null, step_id: el.dataset.step ? Number(el.dataset.step) : null });
 handlers['done'] = (el) => setStatus(el.dataset.id, 'done');
 handlers['reopen'] = (el) => setStatus(el.dataset.id, 'todo');
 handlers['snooze'] = async (el) => {
@@ -330,10 +351,10 @@ async function renderHome() {
       const m = p.metrics;
       const decl = p.rag !== m.health ? `<div class="small muted">déclaré : ${RAG[p.rag]}</div>` : '';
       return `<tr class="clickable" data-act="goto" data-href="#/p/${p.id}">
-        <td><span class="tag">${esc(p.code)}</span></td>
+        <td><span class="tag">${esc(p.code)}</span>${p.ttm ? '<div><span class="tag ttm" title="Deadline imposée">TTM</span></div>' : ''}</td>
         <td class="title"><b>${esc(p.name)}</b><div class="small muted">${esc(p.phase || '')}${p.sponsor ? ' · ' + esc(p.sponsor) : ''}</div></td>
         <td>${ragBadge(m.health, ` <span class="num">${m.score}</span>`)}${decl}</td>
-        <td class="num nw">${p.deadline ? `${fmtDate(p.deadline)}<div class="small ${m.daysLeft < 0 ? 'late' : 'muted'}">${m.daysLeft < 0 ? `dépassée de ${-m.daysLeft} j` : `J-${m.daysLeft}`}</div>` : '<span class="muted">—</span>'}</td>
+        <td class="num nw">${p.deadline ? `${fmtDate(p.deadline)}<div class="small ${m.daysLeft < 0 ? 'late' : 'muted'}">${m.daysLeft < 0 ? `dépassée de ${-m.daysLeft} j` : `J-${m.daysLeft}`}</div>${m.retro && m.retro.remainingDays ? `<div class="small ${m.retro.buffer < 0 ? 'late' : m.retro.buffer <= 5 ? 'prio-high' : 'muted'}">marge ${m.retro.buffer} j</div>` : ''}` : '<span class="muted">—</span>'}</td>
         <td>${progressBar(p.progress, m.elapsedPct)}<div class="small muted num">${p.progress} %${m.elapsedPct !== null ? ` / ${m.elapsedPct} % du temps` : ''}</div></td>
         <td class="num nw">${m.openActions} ouvertes${m.overdueActions ? `<div class="small late">${m.overdueActions} en retard</div>` : ''}${m.waitingActions ? `<div class="small muted">${m.waitingActions} en attente</div>` : ''}</td>
         <td class="num nw">${m.openRisks} ouverts${m.criticalRisks ? `<div class="small late">${m.criticalRisks} critique(s)</div>` : ''}${m.risingRisks.length ? `<div class="small late">↗ ${m.risingRisks.length} en hausse</div>` : ''}</td>
@@ -367,7 +388,7 @@ async function renderHome() {
       const wk = `Semaine du ${pad(monday.getDate())}/${pad(monday.getMonth() + 1)}`;
       const head = wk !== lastWeek ? `<div class="tl-week">${wk}</div>` : '';
       lastWeek = wk;
-      return `${head}<div class="row small" style="padding:3px 0"><span class="num ${u.late ? 'late' : ''}" style="min-width:76px">${fmtDate(u.date)}</span><a class="tag" href="#/p/${u.projectId}">${esc(u.projectCode)}</a><span>${u.type === 'deadline' ? '🏁 ' : '◆ '}${esc(u.title)}${u.late ? ' <span class="late">(en retard)</span>' : ''}</span></div>`;
+      return `${head}<div class="row small" style="padding:3px 0"><span class="num ${u.late ? 'late' : ''}" style="min-width:76px">${fmtDate(u.date)}</span><a class="tag" href="#/p/${u.projectId}">${esc(u.projectCode)}</a><span>${u.type === 'deadline' ? '🏁 ' : u.type === 'retro' ? '▶ ' : '◆ '}${esc(u.title)}${u.late ? ' <span class="late">(en retard)</span>' : ''}</span></div>`;
     })
     .join('');
 
@@ -407,12 +428,14 @@ function feedItem(j) {
   return `<li><span class="feed-kind">${KIND_LABEL[j.kind] || esc(j.kind)}</span><div class="grow">${j.project_code ? `<a class="tag" href="#/p/${j.project_id}">${esc(j.project_code)}</a> ` : ''}${esc(j.text)}</div><span class="small muted num" title="${esc(j.source)}">${SOURCE_ICON[j.source] || ''} ${fmtTs(j.created_at)}</span></li>`;
 }
 
-function actionRow(a, { showProject = false } = {}) {
+const phaseChip = (a) => (a.step_title ? `<span class="phase" title="Phase du rétroplanning">▸ ${esc(a.step_title)}</span>` : '');
+
+function actionRow(a, { showProject = false, beyond = new Set() } = {}) {
   const done = a.status === 'done' || a.status === 'cancelled';
   return `<tr class="${done ? 'done' : ''}">
     <td><button class="check" title="${done ? 'Rouvrir' : 'Marquer fait'}" aria-label="${done ? 'Rouvrir' : 'Marquer fait'}" data-act="${done ? 'reopen' : 'done'}" data-id="${a.id}">${done ? '✓' : ''}</button></td>
     ${showProject ? `<td>${projTag(a.project_code, a.project_id)}</td>` : ''}
-    <td class="title"><a href="#" class="t" data-act="edit-action" data-id="${a.id}">${esc(a.title)}</a>${a.details ? `<div class="small muted">${esc(a.details.slice(0, 120))}</div>` : ''}</td>
+    <td class="title"><a href="#" class="t" data-act="edit-action" data-id="${a.id}">${esc(a.title)}</a>${a.step_title || beyond.has(a.id) ? `<div class="small">${phaseChip(a)}${beyond.has(a.id) ? ' <span class="late" title="Échéance postérieure à la fin au plus tard de la phase">⚠ après la fin de phase</span>' : ''}</div>` : ''}${a.details ? `<div class="small muted">${esc(a.details.slice(0, 120))}</div>` : ''}</td>
     <td>${ownerLabel(a.owner)}</td>
     <td class="num">${done ? fmtDate(a.due_date) : relDate(a.due_date)}</td>
     <td class="prio-${a.priority}">${PRIO_LABEL[a.priority]}</td>
@@ -438,7 +461,115 @@ function riskMatrix(risks) {
     <div class="small muted" style="margin-top:4px">↑ Probabilité · Impact → · cadre rouge = zone critique (score ≥ 15)</div>`;
 }
 
+const STEP_STATUS = { todo: 'À venir', doing: 'En cours', done: 'Terminée' };
+
+// Diagramme de Gantt du rétroplanning : barres = fenêtre au plus tard de chaque étape.
+function ganttBounds(retros) {
+  const t = today();
+  let from = addDaysISO(t, -7);
+  let to = addDaysISO(t, 14);
+  for (const r of retros) {
+    if (r.steps[0]?.latest_start && r.steps[0].latest_start < from) from = r.steps[0].latest_start;
+    if (r.deadline && r.deadline > to) to = r.deadline;
+  }
+  return { from, to: addDaysISO(to, 3) };
+}
+function addDaysISO(iso, n) {
+  const d = parseISO(iso);
+  d.setDate(d.getDate() + n);
+  return toISO(d);
+}
+const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+function ganttAxis({ from, to }) {
+  const span = daysBetween(from, to) + 1;
+  const x = (iso) => (daysBetween(from, iso) / span) * 100;
+  const ticks = [];
+  const d = parseISO(from);
+  d.setDate(1);
+  d.setMonth(d.getMonth() + 1);
+  for (; toISO(d) <= to; d.setMonth(d.getMonth() + 1)) ticks.push(`<span style="left:${x(toISO(d))}%">${MONTHS[d.getMonth()]}${d.getMonth() === 0 ? ' ' + d.getFullYear() : ''}</span>`);
+  return `<div class="g-row g-axis"><div></div><div class="g-track">${ticks.join('')}</div><div></div></div>`;
+}
+function ganttRows(retro, bounds, { editable = false } = {}) {
+  const t = today();
+  const span = daysBetween(bounds.from, bounds.to) + 1;
+  const x = (iso) => Math.max(0, Math.min(100, (daysBetween(bounds.from, iso) / span) * 100));
+  const lines = `${t >= bounds.from && t <= bounds.to ? `<b class="gl today" style="left:${x(t)}%"></b>` : ''}${retro.deadline ? `<b class="gl deadline" style="left:${x(addDaysISO(retro.deadline, 1))}%"></b>` : ''}`;
+  return retro.steps
+    .map((st, i) => {
+      const cls = st.status === 'done' ? 'done' : st.late || st.overdue ? 'late' : st.status === 'doing' ? 'doing' : 'todo';
+      const left = x(st.latest_start);
+      const width = Math.max(0.6, x(addDaysISO(st.latest_end, 1)) - left);
+      const warn = st.overdue ? `aurait dû finir le ${fmtDate(st.latest_end)}` : st.late ? `aurait dû démarrer le ${fmtDate(st.latest_start)}` : '';
+      const tip = `${st.title}\nAu plus tard : ${fmtDate(st.latest_start)} → ${fmtDate(st.latest_end)} (${st.duration_days} j ouvrés)\n${STEP_STATUS[st.status]}${st.owner ? ' · ' + st.owner : ''}${warn ? '\n⚠ ' + warn : ''}`;
+      return `<div class="g-row">
+        <div class="g-label">${editable ? `<a href="#" data-act="edit-step" data-id="${st.id}">${esc(st.title)}</a>` : esc(st.title)}
+          <small>${st.duration_days} j${st.status === 'doing' && st.remaining_days != null ? ` (reste ${st.remaining_days})` : ''} · ${fmtDate(st.latest_start)} → ${fmtDate(st.latest_end)}${st.owner ? ` · ${esc(st.owner)}` : ''}${warn ? ` · <span class="late">${esc(warn)}</span>` : ''}</small>
+          ${
+            st.openActions || editable
+              ? `<small>${editable ? `<a href="#" data-act="phase-filter" data-id="${st.id}">${st.openActions || 0} action(s)</a>` : `${st.openActions} action(s)`}${st.lateActions ? ` · <span class="late">${st.lateActions} en retard</span>` : ''}${st.beyondActions?.length ? ` · <span class="late">${st.beyondActions.length} après la fin de phase</span>` : ''}${editable ? ` · <a href="#" data-act="new-action" data-project="${st.project_id}" data-step="${st.id}">+ action</a>` : ''}</small>`
+              : ''
+          }</div>
+        <div class="g-track" title="${esc(tip)}">${lines}<i class="g-bar ${cls}" style="left:${left}%;width:${width}%"></i></div>
+        <div class="g-ctl">${
+          editable
+            ? `<select data-change="step-status" data-id="${st.id}" aria-label="Statut de l'étape">${options(STEP_STATUS, st.status)}</select>
+               <button class="btn ghost sm" data-act="move-step" data-id="${st.id}" data-delta="-1" aria-label="Monter" ${i === 0 ? 'disabled' : ''}>↑</button><button class="btn ghost sm" data-act="move-step" data-id="${st.id}" data-delta="1" aria-label="Descendre" ${i === retro.steps.length - 1 ? 'disabled' : ''}>↓</button>`
+            : `<span class="small muted">${STEP_STATUS[st.status]}</span>`
+        }</div>
+      </div>`;
+    })
+    .join('');
+}
+function retroSummary(r) {
+  if (!r || !r.remainingDays) return '';
+  const cls = r.buffer < 0 ? 'late' : r.buffer <= 5 ? 'prio-high' : '';
+  return `<div class="row small" style="margin-bottom:8px;gap:14px">
+    <span>Travail restant : <b>${r.remainingDays} j ouvrés</b></span>
+    <span>Disponible d'ici la deadline : <b>${r.availableDays} j</b></span>
+    <span class="${cls}">Marge : <b>${r.buffer >= 0 ? `${r.buffer} j` : `−${-r.buffer} j (infaisable en l'état)`}</b></span>
+    ${r.nextStep ? `<span>Prochaine étape : <b>${esc(r.nextStep.title)}</b>, au plus tard le ${fmtDate(r.nextStep.latest_start)}</span>` : ''}
+  </div>`;
+}
+const GANTT_LEGEND = `<div class="small muted g-legend"><span><i class="g-bar todo"></i>À venir</span><span><i class="g-bar doing"></i>En cours</span><span><i class="g-bar done"></i>Terminée</span><span><i class="g-bar late"></i>En retard</span><span><b class="gl today"></b>Aujourd'hui</span><span><b class="gl deadline"></b>Deadline</span></div>`;
+
+function stepForm(st = {}) {
+  return `<div class="form">
+    <label class="full">Étape<input name="title" required value="${esc(st.title)}" placeholder="Recette utilisateurs"></label>
+    <label>Durée (jours ouvrés)<input type="number" name="duration_days" min="1" max="1000" required value="${esc(st.duration_days ?? 5)}"></label>
+    <label>Porteur<input name="owner" value="${esc(st.owner)}"></label>
+    ${st.id ? `<label>Statut<select name="status">${options(STEP_STATUS, st.status)}</select></label>
+    <label>Reste à faire (j ouvrés, si en cours)<input type="number" name="remaining_days" min="0" max="1000" value="${esc(st.remaining_days ?? '')}" placeholder="durée complète"></label>` : ''}
+    <div class="full small muted">Les étapes s'enchaînent dans l'ordre de la liste ; la dernière se termine à la deadline.</div>
+  </div>`;
+}
+
+async function shareProject(p) {
+  const text = await api('GET', `/api/projects/${p.id}/report.txt`);
+  modal(`Partager le statut — ${p.code}`, `
+    <p class="small muted" style="margin-top:0">Instantané de l'état actuel du projet : à envoyer au sponsor, en COPIL ou dans un canal Teams.</p>
+    <div class="row" style="margin-bottom:12px">
+      <a class="btn primary" href="/api/projects/${p.id}/report.html" target="_blank" rel="noopener">Ouvrir le rapport (→ PDF via Imprimer)</a>
+      <a class="btn" href="/api/projects/${p.id}/report.html?download=1">Télécharger (.html)</a>
+      <a class="btn" href="/api/projects/${p.id}/actions.csv">Actions (.csv)</a>
+    </div>
+    <label class="small muted" for="share-text">Résumé texte (Teams, Outlook, Telegram)</label>
+    <textarea id="share-text" rows="14" readonly>${esc(text)}</textarea>`, {
+    extra: '<button class="btn" type="button" id="copy-share">Copier le texte</button>',
+  });
+  $('#copy-share').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      $('#share-text').select();
+      document.execCommand('copy');
+    }
+    toast('Résumé copié — colle-le dans Teams ou un mail');
+  });
+}
+
 let projectFilter = 'open';
+let phaseFilter = null;
 async function renderProject(id) {
   const d = await api('GET', `/api/projects/${id}`);
   const p = d.project;
@@ -477,10 +608,61 @@ async function renderProject(id) {
     await api('PATCH', `/api/projects/${p.id}`, { rag: el.value });
     renderProject(id);
   };
+  handlers['share'] = () => shareProject(p);
+  const retro = m.retro;
+  const steps = retro ? retro.steps : [];
+  handlers['add-step'] = () => modal('Nouvelle étape', stepForm(), { onSubmit: (data) => api('POST', `/api/projects/${p.id}/retro`, data) });
+  handlers['edit-step'] = (el) => {
+    const st = steps.find((x) => x.id === Number(el.dataset.id));
+    modal('Étape du rétroplanning', stepForm(st), {
+      extra: '<button class="btn danger" type="button" id="del-step">Supprimer</button>',
+      onSubmit: (data) => api('PATCH', `/api/retro-steps/${st.id}`, data),
+    });
+    $('#del-step').addEventListener('click', async () => {
+      if (!confirm('Supprimer cette étape ?')) return;
+      await api('DELETE', `/api/retro-steps/${st.id}`);
+      $('#modal').close();
+      renderProject(id);
+    });
+  };
+  handlers['step-status'] = async (el) => {
+    await api('PATCH', `/api/retro-steps/${el.dataset.id}`, { status: el.value });
+    renderProject(id);
+  };
+  handlers['move-step'] = async (el) => {
+    await api('POST', `/api/retro-steps/${el.dataset.id}/move`, { delta: Number(el.dataset.delta) });
+    renderProject(id);
+  };
+  handlers['retro-template'] = async () => {
+    await api('POST', `/api/projects/${p.id}/retro/template`, {});
+    toast('Modèle ajouté : ajuste les durées');
+    renderProject(id);
+  };
+  const bounds = retro && steps.length ? ganttBounds([retro]) : null;
+  const retroCard = `<section class="card">
+    <header><h2>Rétroplanning${p.deadline ? ` <span class="small muted">— à rebours depuis le ${fmtDate(p.deadline)}</span>` : ''}</h2>
+      <div class="row">${steps.length ? '' : '<button class="btn sm" data-act="retro-template">Partir du modèle TTM</button>'}<button class="btn sm" data-act="add-step">+ Étape</button></div></header>
+    ${
+      !p.deadline
+        ? '<div class="empty">Renseigne la deadline du projet (Modifier) pour calculer le rétroplanning.</div>'
+        : steps.length
+          ? `${retroSummary(retro)}<div class="gantt">${ganttAxis(bounds)}${ganttRows(retro, bounds, { editable: true })}</div>${GANTT_LEGEND}`
+          : '<div class="empty">Aucune étape. Liste les étapes et leur durée en jours ouvrés : l\'app calcule les dates de démarrage au plus tard (week-ends et jours fériés exclus).</div>'
+    }
+  </section>`;
 
-  const actions = d.actions.filter((a) =>
-    projectFilter === 'open' ? a.status !== 'done' && a.status !== 'cancelled' : projectFilter === 'late' ? a.due_date && a.due_date < today() && a.status !== 'done' && a.status !== 'cancelled' : true
+  const beyond = new Set((m.retro?.steps || []).flatMap((st) => st.beyondActions || []));
+  if (phaseFilter && !(m.retro?.steps || []).some((st) => st.id === phaseFilter)) phaseFilter = null;
+  handlers['phase-filter'] = (el) => {
+    phaseFilter = el.dataset.id ? Number(el.dataset.id) : null;
+    renderProject(id).then(() => $('#actions-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
+  const actions = d.actions.filter(
+    (a) =>
+      (!phaseFilter || a.step_id === phaseFilter) &&
+      (projectFilter === 'open' ? a.status !== 'done' && a.status !== 'cancelled' : projectFilter === 'late' ? a.due_date && a.due_date < today() && a.status !== 'done' && a.status !== 'cancelled' : true)
   );
+  const phaseName = phaseFilter ? m.retro.steps.find((st) => st.id === phaseFilter).title : null;
   const risks = d.risks
     .map(
       (r) => `<tr class="${r.status === 'closed' ? 'done' : ''}"><td><span class="score ${scoreCls(r.score)}">${r.score}</span></td>
@@ -492,14 +674,17 @@ async function renderProject(id) {
 
   view.innerHTML = `
     <div class="page-head">
-      <div><div class="row"><span class="tag">${esc(p.code)}</span><h1>${esc(p.name)}</h1>${ragBadge(m.health, ` <span class="num">${m.score}/100</span>`)}</div>
+      <div><div class="row"><span class="tag">${esc(p.code)}</span>${p.ttm ? '<span class="tag ttm">Deadline imposée</span>' : ''}<h1>${esc(p.name)}</h1>${ragBadge(m.health, ` <span class="num">${m.score}/100</span>`)}</div>
       <div class="small muted" style="margin-top:4px">${esc(p.phase || 'Phase ?')} · Sponsor : ${esc(p.sponsor || '—')} · Deadline : ${p.deadline ? `${fmtDate(p.deadline)} (${m.daysLeft < 0 ? `dépassée de ${-m.daysLeft} j` : `J-${m.daysLeft}`})` : '—'}${p.aliases ? ` · alias : ${esc(p.aliases)}` : ''}</div></div>
       <div class="row">
         <label class="small">Statut déclaré <select data-change="quick-rag">${options(RAG, p.rag)}</select></label>
         <label class="small">Avancement <input type="number" min="0" max="100" value="${p.progress}" data-change="quick-progress" style="width:70px"> %</label>
         <button class="btn" data-act="edit-project">Modifier</button>
+        <button class="btn primary" data-act="share">Partager le statut</button>
       </div>
     </div>
+    ${p.status_note ? `<div class="note-card"><b>Message clé</b> ${esc(p.status_note)}</div>` : ''}
+    ${p.ttm ? `<div class="mb">${retroCard}</div>` : ''}
     <section class="kpis">
       ${kpi('Actions ouvertes', m.openActions, `${m.dueSoonActions} dans les 7 j · ${m.waitingActions} en attente`)}
       ${kpi('En retard', m.overdueActions, 'actions dépassées', '', m.overdueActions > 0)}
@@ -509,11 +694,11 @@ async function renderProject(id) {
     </section>
     <div class="grid cols-main">
       <div class="stack">
-        <section class="card">
-          <header><h2>Actions</h2><div class="row">
+        <section class="card" id="actions-card">
+          <header><h2>Actions${phaseName ? ` <span class="phase">▸ ${esc(phaseName)} <button class="btn ghost sm" data-act="phase-filter" aria-label="Retirer le filtre de phase">✕</button></span>` : ''}</h2><div class="row">
             <div class="seg">${[['open', 'Ouvertes'], ['late', 'En retard'], ['all', 'Toutes']].map(([v, l]) => `<button data-act="pfilter" data-v="${v}" class="${projectFilter === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-            <button class="btn sm" data-act="new-action" data-project="${p.id}">+ Action</button></div></header>
-          <div class="table-wrap">${actions.length ? `<table class="table"><thead><tr><th></th><th>Action</th><th>Porteur</th><th>Échéance</th><th>Priorité</th><th>Statut</th><th></th></tr></thead><tbody>${actions.map((a) => actionRow(a)).join('')}</tbody></table>` : '<div class="empty">Aucune action.</div>'}</div>
+            <button class="btn sm" data-act="new-action" data-project="${p.id}" ${phaseFilter ? `data-step="${phaseFilter}"` : ''}>+ Action</button></div></header>
+          <div class="table-wrap">${actions.length ? `<table class="table"><thead><tr><th></th><th>Action</th><th>Porteur</th><th>Échéance</th><th>Priorité</th><th>Statut</th><th></th></tr></thead><tbody>${actions.map((a) => actionRow(a, { beyond })).join('')}</tbody></table>` : '<div class="empty">Aucune action.</div>'}</div>
         </section>
         <section class="card">
           <header><h2>Risques</h2><button class="btn sm" data-act="new-risk" data-project="${p.id}">+ Risque</button></header>
@@ -522,6 +707,7 @@ async function renderProject(id) {
             <div class="table-wrap">${risks ? `<table class="table"><tbody>${risks}</tbody></table>` : '<div class="empty">Aucun risque identifié.</div>'}</div>
           </div>
         </section>
+        ${p.ttm ? '' : retroCard}
       </div>
       <div class="stack">
         <section class="card"><header><h2>Signaux</h2></header><ul class="list">${
@@ -552,7 +738,7 @@ async function renderTodo() {
   const item = (a, follow = false) => `<div class="todo-item">
       <button class="check" data-act="done" data-id="${a.id}" aria-label="Marquer fait" title="Marquer fait"></button>
       <div class="grow"><div><a href="#" class="t" data-act="edit-action" data-id="${a.id}" style="color:inherit">${esc(a.title)}</a></div>
-        <div class="meta">${projTag(a.project_code, a.project_id)}<span>${relDate(a.due_date)}</span>${a.priority !== 'normal' ? `<span class="prio-${a.priority}">${PRIO_LABEL[a.priority]}</span>` : ''}${follow ? `<span>👤 ${ownerLabel(a.owner)}</span>` : ''}${follow && a.needsNudge ? '<span class="late">à relancer</span>' : ''}${SOURCE_ICON[a.source] ? `<span title="${esc(a.source)}">${SOURCE_ICON[a.source]}</span>` : ''}</div></div>
+        <div class="meta">${projTag(a.project_code, a.project_id)}${phaseChip(a)}<span>${relDate(a.due_date)}</span>${a.priority !== 'normal' ? `<span class="prio-${a.priority}">${PRIO_LABEL[a.priority]}</span>` : ''}${follow ? `<span>👤 ${ownerLabel(a.owner)}</span>` : ''}${follow && a.needsNudge ? '<span class="late">à relancer</span>' : ''}${SOURCE_ICON[a.source] ? `<span title="${esc(a.source)}">${SOURCE_ICON[a.source]}</span>` : ''}</div></div>
       <div class="acts"><button class="btn sm" data-act="snooze" data-id="${a.id}" data-days="1" title="Reporter d'un jour">+1j</button><button class="btn sm" data-act="snooze" data-id="${a.id}" data-days="7" title="Reporter d'une semaine">+1s</button></div>
     </div>`;
   const group = (title, list, cls = '') =>
@@ -707,6 +893,24 @@ function renderProposals(r) {
     `<div class="row" style="margin-top:12px"><button class="btn primary" data-act="commit">Ajouter la sélection</button></div>`;
 }
 
+async function renderRetro() {
+  const pf = await api('GET', '/api/portfolio');
+  const withRetro = pf.projects.filter((p) => p.metrics.retro && p.metrics.retro.steps.length && p.deadline);
+  const ttmEmpty = pf.projects.filter((p) => p.ttm && !withRetro.includes(p));
+  const bounds = ganttBounds(withRetro.map((p) => p.metrics.retro));
+  withRetro.sort((a, b) => (a.metrics.retro.buffer ?? 999) - (b.metrics.retro.buffer ?? 999));
+  const groups = withRetro
+    .map((p) => {
+      const r = p.metrics.retro;
+      return `<div class="g-group"><div class="row" style="margin:14px 0 4px"><a class="tag" href="#/p/${p.id}">${esc(p.code)}</a><b>${esc(p.name)}</b>${ragBadge(p.metrics.health)}<span class="small muted">deadline ${fmtDate(p.deadline)}</span></div>
+        ${retroSummary(r)}${ganttRows(r, bounds)}</div>`;
+    })
+    .join('');
+  view.innerHTML = `<div class="page-head"><h1>Rétroplanning</h1><span class="small muted">Projets à deadline imposée, planifiés à rebours — triés par marge (la plus faible en premier)</span></div>
+    <section class="card">${withRetro.length ? `<div class="gantt">${ganttAxis(bounds)}${groups}</div>${GANTT_LEGEND}` : '<div class="empty">Aucun rétroplanning. Coche « Deadline imposée (TTM) » dans la fiche d\'un projet puis ajoute ses étapes.</div>'}</section>
+    ${ttmEmpty.length ? `<section class="card" style="margin-top:16px"><header><h2>Projets TTM sans étapes</h2></header><ul class="list">${ttmEmpty.map((p) => `<li><a class="tag" href="#/p/${p.id}">${esc(p.code)}</a><div class="grow">${esc(p.name)}</div><a href="#/p/${p.id}">Construire le rétroplanning →</a></li>`).join('')}</ul></section>` : ''}`;
+}
+
 async function renderJournal() {
   const rows = await api('GET', '/api/journal?limit=300');
   view.innerHTML = `<div class="page-head"><h1>Journal</h1><span class="small muted">Changements, décisions, risques et notes — tous projets</span></div>
@@ -714,7 +918,18 @@ async function renderJournal() {
 }
 
 async function renderSettings() {
-  const s = (state.settings = await api('GET', '/api/settings'));
+  const [s, demo] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/demo')]);
+  state.settings = s;
+  const demoLabel = demo.label;
+  handlers['clear-demo'] = async () => {
+    const names = demo.projects.map((p) => `${p.code} — ${p.name}`).join('\n');
+    if (!confirm(`Supprimer les données de démonstration ?\n\n${names}\n\n${demoLabel}.\nTout ce que tu as ajouté dans ces projets sera supprimé aussi.`)) return;
+    await api('POST', '/api/demo/clear');
+    state.projects = [];
+    await loadProjects();
+    toast('Données de démonstration supprimées');
+    route();
+  };
   const i = s.integrations;
   const yes = (b) => (b ? '<span class="badge st-green"><span class="dot"></span>Actif</span>' : '<span class="badge">Non configuré</span>');
   handlers['save-settings'] = async () => {
@@ -749,17 +964,26 @@ async function renderSettings() {
         </tbody></table>
         ${i.auth ? '<p><button class="btn" id="logout">Se déconnecter</button></p>' : ''}
       </section>
+      ${
+        demoLabel
+          ? `<section class="card" style="grid-column:1/-1"><header><h2>Données de démonstration</h2></header>
+        <p style="margin-top:0">Projets de démo présents : ${demo.projects.map((p) => `<span class="tag">${esc(p.code)}</span>`).join(' ') || '—'} (${esc(demoLabel)}).</p>
+        <p class="small muted">Tes propres projets, actions et réglages ne sont pas touchés. Ce que tu as ajouté <b>dans</b> un projet de démo est supprimé avec lui.</p>
+        <button class="btn danger" data-act="clear-demo">Supprimer les données de démonstration</button></section>`
+          : ''
+      }
       <section class="card" style="grid-column:1/-1"><header><h2>Syntaxe de capture (web, Telegram, WhatsApp)</h2></header>
         <table class="table small"><tbody>
           <tr><td><code>#CRM relancer Paul sur le budget vendredi</code></td><td>Action pour moi, projet CRM, échéance vendredi</td></tr>
           <tr><td><code>#CRM @Paul envoyer le planning demain !</code></td><td>Action pour Paul, priorité haute</td></tr>
+          <tr><td><code>#ERP ~recette préparer les jeux de test lundi</code></td><td>Action rattachée à la phase « Recette… » du rétroplanning</td></tr>
           <tr><td><code>w: #ERP @Sophie retour juridique 12/10</code></td><td>En attente de Sophie → apparaît dans « À relancer »</td></tr>
           <tr><td><code>r: #ERP fournisseur en retard p4 i5</code></td><td>Risque probabilité 4 × impact 5</td></tr>
           <tr><td><code>c: #CRM go-live décalé au 15/11</code></td><td>Changement consigné au journal</td></tr>
           <tr><td><code>d: …</code> / <code>n: …</code></td><td>Décision / note</td></tr>
           <tr><td>Dates</td><td>aujourd'hui, demain, lundi…, fin de semaine, fin du mois, semaine prochaine, +3j, +2s, dans 3 jours, 12/10, 12 octobre</td></tr>
           <tr><td>Priorité</td><td><code>!</code> haute · <code>!!</code> critique · <code>!basse</code></td></tr>
-          <tr><td>Telegram</td><td><code>/todo</code> <code>/retard</code> <code>/semaine</code> <code>/attente</code> <code>/projets</code> <code>/p CRM</code> <code>/inbox</code> <code>/fait 12</code> <code>/report 12 lundi</code> — un long texte collé (ou préfixé <code>mail:</code>) est traité comme un mail</td></tr>
+          <tr><td>Telegram</td><td><code>/todo</code> <code>/retard</code> <code>/semaine</code> <code>/attente</code> <code>/projets</code> <code>/p CRM</code> <code>/inbox</code> <code>/fait 12</code> <code>/report 12 lundi</code> <code>/rapport CRM</code> — un long texte collé (ou préfixé <code>mail:</code>) est traité comme un mail</td></tr>
         </tbody></table>
       </section>
     </div>`;
@@ -817,6 +1041,9 @@ async function route() {
       case 'mail':
         await renderMail(arg);
         break;
+      case 'retro':
+        await renderRetro();
+        break;
       case 'journal':
         await renderJournal();
         break;
@@ -836,5 +1063,9 @@ try {
   const theme = localStorage.getItem('theme');
   if (theme && theme !== 'auto') document.documentElement.dataset.theme = theme;
 } catch {}
+// Filet de sécurité : une erreur non gérée s'affiche au lieu d'échouer en silence.
+window.addEventListener('unhandledrejection', (e) => {
+  if (e.reason?.message !== 'auth') toast(e.reason?.message || 'Erreur inattendue');
+});
 window.addEventListener('hashchange', route);
 route();

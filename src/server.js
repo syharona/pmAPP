@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { config } from './config.js';
 import { openDb } from './db.js';
+import { driverName } from './sqlite.js';
 import { createApp } from './app.js';
 import { createTelegram } from './telegram.js';
 import { createWhatsApp } from './whatsapp.js';
@@ -28,7 +29,7 @@ const whatsapp = config.whatsapp.token && config.whatsapp.phoneNumberId ? create
 
 const server = http.createServer(createApp(repo, config, { telegram, whatsapp }));
 server.listen(config.port, config.host, () => {
-  console.info(`PM Cockpit prêt sur http://${config.host}:${config.port}`);
+  console.info(`PM Cockpit prêt sur http://${config.host}:${config.port} (base : ${driverName})`);
   if (!config.appPassword && config.host !== '127.0.0.1' && config.host !== 'localhost') {
     console.warn('⚠️  APP_PASSWORD non défini alors que le serveur écoute sur le réseau.');
   }
