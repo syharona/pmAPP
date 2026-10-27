@@ -100,6 +100,25 @@ CREATE TABLE IF NOT EXISTS retro_steps (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Journal des appels à l'IA (diagnostic). Le contenu des mails n'y est jamais stocké.
+CREATE TABLE IF NOT EXISTS ai_logs (
+  id INTEGER PRIMARY KEY,
+  at TEXT DEFAULT (datetime('now')),
+  feature TEXT DEFAULT 'mail',
+  model TEXT,
+  attempt TEXT,
+  ok INTEGER,
+  status INTEGER,
+  error TEXT,
+  request_id TEXT,
+  duration_ms INTEGER,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  stop_reason TEXT,
+  input_chars INTEGER,
+  items INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -152,6 +171,7 @@ const FIELDS = {
   milestones: ['project_id', 'title', 'due_date', 'done'],
   retro_steps: ['project_id', 'title', 'duration_days', 'owner', 'status', 'remaining_days', 'position'],
   emails: ['subject', 'sender', 'body', 'source', 'status'],
+  ai_logs: ['feature', 'model', 'attempt', 'ok', 'status', 'error', 'request_id', 'duration_ms', 'input_tokens', 'output_tokens', 'stop_reason', 'input_chars', 'items'],
 };
 const TOUCH = new Set(['projects', 'actions', 'risks']);
 
@@ -328,6 +348,16 @@ function createRepo(db) {
       if (j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]];
       list.forEach((s, k) => db.prepare('UPDATE retro_steps SET position = ? WHERE id = ?').run(k + 1, s.id));
       return get('retro_steps', id);
+    },
+
+    // --- journal des appels IA (500 dernières entrées)
+    addAiLog(entry) {
+      const row = insert('ai_logs', { ...entry, ok: entry.ok ? 1 : 0 });
+      db.prepare('DELETE FROM ai_logs WHERE id <= ?').run(row.id - 500);
+      return row;
+    },
+    listAiLogs(limit = 50) {
+      return all('SELECT * FROM ai_logs ORDER BY id DESC LIMIT ?', limit);
     },
 
     // --- mails en attente de traitement

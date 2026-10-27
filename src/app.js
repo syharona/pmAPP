@@ -367,6 +367,17 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
   route('POST', '/api/items/delete', (req, res, p, body) => ({ ok: deleteItem(repo, body.kind, Number(body.id)) }));
 
   // --------------------------------------------------------------------- mails
+  // Chaque appel à l'IA est journalisé (base + logs du serveur) pour le diagnostic.
+  const logAi = (entry) => {
+    repo.addAiLog({ feature: 'mail', ...entry });
+    const tokens = entry.input_tokens != null ? ` tokens=${entry.input_tokens}/${entry.output_tokens}` : '';
+    const line = `[ia] ${entry.ok ? 'ok' : 'ÉCHEC'} modèle=${entry.model} tentative="${entry.attempt}" statut=${entry.status ?? '-'} durée=${entry.duration_ms ?? '-'}ms${tokens} request-id=${entry.request_id || '-'}`;
+    if (entry.ok) console.info(line);
+    else console.warn(`${line} erreur="${entry.error}"`);
+  };
+  route('GET', '/api/ai-logs', () => repo.listAiLogs(50));
+  route('DELETE', '/api/ai-logs', () => ({ ok: repo.db.prepare('DELETE FROM ai_logs').run().changes >= 0 }));
+
   // Au plus 40 extractions par Claude par heure.
   const aiCalls = [];
   const aiQuota = () => {
@@ -382,7 +393,7 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
     const ctx = captureContext(repo);
     const useClaude = Boolean(config.anthropic.apiKey) && body.engine !== 'local';
     if (useClaude && !aiQuota()) throw new HttpError(429, "Quota d'extractions IA atteint pour l'heure (protection de la facture API) ; utilise le moteur local.");
-    const result = await extractFromEmail(body, ctx, { ...config.anthropic, disabled: !useClaude });
+    const result = await extractFromEmail(body, ctx, { ...config.anthropic, disabled: !useClaude, log: logAi });
     if (body.projectId) {
       for (const it of result.items) it.projectId ??= Number(body.projectId);
       result.projectId ??= Number(body.projectId);

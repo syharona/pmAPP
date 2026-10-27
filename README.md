@@ -75,7 +75,7 @@ Trois façons de faire entrer un mail :
 L'extraction se fait par :
 
 - une **heuristique locale** (par défaut) : formules d'action (« merci de », « pourrais-tu », listes sous « Actions : »…), porteurs (`Paul :`, « je m'occupe »), dates, signaux de risque et de changement. Rien ne sort du poste.
-- **Claude** si `ANTHROPIC_API_KEY` est renseignée (et `npm install` fait) : extraction plus fine, avec un résumé. Le modèle est configurable via `ANTHROPIC_MODEL`. ⚠️ Le contenu du mail est alors envoyé à l'API Anthropic : vérifie que c'est compatible avec la politique de ta société. Le moteur local reste sélectionnable mail par mail.
+- **Claude** si `ANTHROPIC_API_KEY` est renseignée (et `npm install` fait) : extraction plus fine, avec un résumé. Le modèle est configurable via `ANTHROPIC_MODEL` (`claude-opus-5-5` par défaut). Si l'API refuse la requête (erreur 400), l'app réessaie une fois sans les options bêta. Chaque appel est enregistré dans *Réglages → Journal des appels IA* et dans les logs du serveur (lignes `[ia]`) : statut, message d'erreur de l'API, durée, tokens et `request-id`. Le contenu des mails n'y figure jamais. ⚠️ Le contenu du mail est alors envoyé à l'API Anthropic : vérifie que c'est compatible avec la politique de ta société. Le moteur local reste sélectionnable mail par mail.
 
 Dans les deux cas, tu relis et ajustes les propositions (type, projet, porteur, échéance, priorité) avant de les ajouter.
 
