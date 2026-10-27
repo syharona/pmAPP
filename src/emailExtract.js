@@ -195,11 +195,15 @@ export function heuristicExtract({ subject = '', from = '', body = '' }, ctx = {
 
 // ---------------------------------------------------------------- Claude
 
+// Champ facultatif : `anyOf` est la forme documentée des sorties structurées
+// (les types combinés du style ["string", "null"] n'y figurent pas).
+const nullable = (schema, description) => ({ anyOf: [schema, { type: 'null' }], ...(description ? { description } : {}) });
+
 const ITEM_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    projectCode: { type: ['string', 'null'], description: 'Code du projet principal du mail, ou null' },
+    projectCode: nullable({ type: 'string' }, 'Code du projet principal du mail, ou null'),
     summary: { type: 'string', description: 'Résumé du mail en une phrase' },
     items: {
       type: 'array',
@@ -209,12 +213,12 @@ const ITEM_SCHEMA = {
         properties: {
           kind: { type: 'string', enum: ['action', 'risk', 'change', 'decision'] },
           title: { type: 'string', description: 'Formulation courte et actionnable, commençant par un verbe pour une action' },
-          projectCode: { type: ['string', 'null'] },
-          owner: { type: ['string', 'null'], description: '"moi" si l\'utilisateur doit agir, sinon le prénom/nom du porteur' },
-          due: { type: ['string', 'null'], description: 'Échéance AAAA-MM-JJ ou null' },
+          projectCode: nullable({ type: 'string' }),
+          owner: nullable({ type: 'string' }, '"moi" si l\'utilisateur doit agir, sinon le prénom/nom du porteur'),
+          due: nullable({ type: 'string' }, 'Échéance AAAA-MM-JJ ou null'),
           priority: { type: 'string', enum: ['low', 'normal', 'high', 'critical'] },
-          probability: { type: ['integer', 'null'], description: 'Risque uniquement : probabilité 1-5' },
-          impact: { type: ['integer', 'null'], description: 'Risque uniquement : impact 1-5' },
+          probability: nullable({ type: 'integer' }, 'Risque uniquement : probabilité 1-5'),
+          impact: nullable({ type: 'integer' }, 'Risque uniquement : impact 1-5'),
           excerpt: { type: 'string', description: 'Phrase du mail justifiant l\'élément' },
         },
         required: ['kind', 'title', 'projectCode', 'owner', 'due', 'priority', 'probability', 'impact', 'excerpt'],
@@ -224,25 +228,48 @@ const ITEM_SCHEMA = {
   required: ['projectCode', 'summary', 'items'],
 };
 
-let clientPromise;
+let sdkPromise;
+const loadSdk = () => (sdkPromise ??= import('@anthropic-ai/sdk').then((m) => m.default).catch(() => null));
+let cachedClient;
 async function getClient(apiKey) {
-  clientPromise ??= import('@anthropic-ai/sdk')
-    .then(({ default: Anthropic }) => new Anthropic({ apiKey }))
-    .catch(() => null);
-  return clientPromise;
+  const Anthropic = await loadSdk();
+  if (!Anthropic) return null;
+  if (cachedClient?.key !== apiKey) cachedClient = { key: apiKey, client: new Anthropic({ apiKey }) };
+  return cachedClient.client;
 }
 
-export async function claudeExtract(mail, ctx, { apiKey, model }) {
-  const client = await getClient(apiKey);
-  if (!client) throw new Error('SDK @anthropic-ai/sdk non installé (npm install)');
+/** Statut, message lisible et identifiant de requête d'une erreur de l'API. */
+function describeError(err, Anthropic) {
+  if (Anthropic && err instanceof Anthropic.APIError) {
+    return {
+      status: err.status ?? null,
+      message: err.error?.error?.message || err.message,
+      type: err.error?.error?.type || null,
+      requestId: err.requestID || null,
+    };
+  }
+  return { status: err.status ?? null, message: err.message, type: null, requestId: null };
+}
+
+/**
+ * Extraction par Claude. Chaque tentative est journalisée via `log` (sans le contenu du mail).
+ * Si l'API refuse la requête (400), on réessaie une fois sans les options bêta.
+ */
+export async function claudeExtract(mail, ctx, { apiKey, model, client: injected, log = () => {} }) {
+  const Anthropic = await loadSdk();
+  const client = injected ?? (await getClient(apiKey));
+  const content = `De : ${mail.from || ''}\nObjet : ${mail.subject || ''}\n\n${mail.body || ''}`;
+  if (!client) {
+    const message = 'SDK @anthropic-ai/sdk non installé (npm install)';
+    log({ ok: false, model, attempt: '—', error: message, input_chars: content.length });
+    throw new Error(message);
+  }
   const { projects = [], meAliases = [], today = todayISO() } = ctx;
   const projectList = projects.map((p) => `- ${p.code} : ${p.name}${p.aliases ? ` (alias : ${p.aliases})` : ''}`).join('\n');
 
-  const response = await client.beta.messages.create({
+  const request = {
     model,
     max_tokens: 8000,
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
     output_config: { effort: 'low', format: { type: 'json_schema', schema: ITEM_SCHEMA } },
     system:
       `Tu aides un chef de projet / Scrum Master à transformer ses mails en éléments de suivi. ` +
@@ -251,17 +278,54 @@ export async function claudeExtract(mail, ctx, { apiKey, model }) {
       `présents dans le mail ; ignore les politesses et l'historique cité. owner = "moi" quand c'est à l'utilisateur d'agir. ` +
       `Les dates relatives se calculent à partir d'aujourd'hui : ${today}. ` +
       `Projets connus :\n${projectList || '(aucun)'}`,
-    messages: [
-      {
-        role: 'user',
-        content: `De : ${mail.from || ''}\nObjet : ${mail.subject || ''}\n\n${mail.body || ''}`,
-      },
-    ],
-  });
+    messages: [{ role: 'user', content }],
+  };
+  const attempts = [
+    // Bascule automatique vers un autre modèle si le modèle principal refuse (bêta).
+    { label: 'avec fallbacks', run: () => client.beta.messages.create({ ...request, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }) },
+    { label: 'sans options bêta', run: () => client.messages.create(request) },
+  ];
 
-  if (response.stop_reason === 'refusal') throw new Error('Extraction refusée par le modèle');
-  const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
-  const data = JSON.parse(text);
+  for (const [i, attempt] of attempts.entries()) {
+    const started = Date.now();
+    const entry = { model, attempt: attempt.label, input_chars: content.length };
+    let response;
+    try {
+      response = await attempt.run();
+    } catch (err) {
+      const info = describeError(err, Anthropic);
+      log({ ...entry, ok: false, status: info.status, error: [info.type, info.message].filter(Boolean).join(' : '), request_id: info.requestId, duration_ms: Date.now() - started });
+      // Seule une requête refusée (400) peut venir des options bêta : on retente sans elles.
+      const retry = Anthropic && err instanceof Anthropic.BadRequestError && i < attempts.length - 1;
+      if (!retry) throw Object.assign(new Error(info.message), { status: info.status });
+      continue;
+    }
+
+    const done = {
+      ...entry,
+      model: response.model || model,
+      status: 200,
+      request_id: response._request_id || null,
+      duration_ms: Date.now() - started,
+      stop_reason: response.stop_reason,
+      input_tokens: response.usage?.input_tokens ?? null,
+      output_tokens: response.usage?.output_tokens ?? null,
+    };
+    try {
+      if (response.stop_reason === 'refusal') throw new Error(`Extraction refusée par le modèle (${response.stop_details?.category || 'sans catégorie'})`);
+      if (response.stop_reason === 'max_tokens') throw new Error('Réponse tronquée (max_tokens atteint)');
+      const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+      const result = toItems(JSON.parse(text), projects, meAliases);
+      log({ ...done, ok: true, items: result.items.length });
+      return result;
+    } catch (err) {
+      log({ ...done, ok: false, error: err instanceof SyntaxError ? `Réponse illisible : ${err.message}` : err.message });
+      throw err;
+    }
+  }
+}
+
+function toItems(data, projects, meAliases) {
   const byCode = (code) => (code ? projects.find((p) => p.code.toLowerCase() === String(code).toLowerCase()) : null);
   const mailProject = byCode(data.projectCode);
   return {
@@ -294,7 +358,7 @@ export async function extractFromEmail(mail, ctx, anthropic = {}) {
       return await claudeExtract(mail, ctx, anthropic);
     } catch (err) {
       const res = heuristicExtract(mail, ctx);
-      res.warning = `Extraction IA indisponible (${String(err.status || err.message).slice(0, 120)}) — heuristique utilisée.`;
+      res.warning = `Extraction IA indisponible${err.status ? ` (HTTP ${err.status})` : ''} : ${String(err.message).slice(0, 300)} — heuristique utilisée. Détail dans Réglages → Journal des appels IA.`;
       return res;
     }
   }

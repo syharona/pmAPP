@@ -135,12 +135,22 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
   // Anti-force brute : 5 échecs en 15 min depuis une même adresse → blocage 15 min.
   const failures = new Map();
   const WINDOW = 15 * 60 * 1000;
-  const clientIp = (req) =>
-    (config.trustProxy && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress || '?';
+  // Le client peut écrire ce qu'il veut dans X-Forwarded-For ; seules les adresses ajoutées par
+  // notre proxy (à droite de la liste) sont fiables. TRUST_PROXY_HOPS = nombre de proxys devant l'app.
+  const clientIp = (req) => {
+    const chain = config.trustProxy ? String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean) : [];
+    return chain[chain.length - (config.proxyHops || 1)] || req.socket.remoteAddress || '?';
+  };
+  // Filet global : au-delà de 100 échecs par heure (toutes adresses confondues), connexions suspendues.
+  const recentFailures = [];
+  const GLOBAL_MAX = 100;
   const lockedFor = (ip) => {
+    const now = Date.now();
+    while (recentFailures.length && now - recentFailures[0] > 3600000) recentFailures.shift();
+    if (recentFailures.length >= GLOBAL_MAX) return Math.ceil((recentFailures[0] + 3600000 - now) / 1000);
     const f = failures.get(ip);
-    if (!f || Date.now() - f.first > WINDOW) return 0;
-    return f.count >= 5 ? Math.ceil((f.first + WINDOW - Date.now()) / 1000) : 0;
+    if (!f || now - f.first > WINDOW) return 0;
+    return f.count >= 5 ? Math.ceil((f.first + WINDOW - now) / 1000) : 0;
   };
 
   route('GET', '/api/health', () => ({ ok: true }), { public: true });
@@ -156,8 +166,9 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
     if (!safeEqual(body.password || '', config.appPassword)) {
       const f = failures.get(ip);
       failures.set(ip, f && Date.now() - f.first <= WINDOW ? { ...f, count: f.count + 1 } : { first: Date.now(), count: 1 });
+      recentFailures.push(Date.now());
       if (failures.size > 10000) failures.clear();
-      await new Promise((r) => setTimeout(r, 400)); // ralentit les essais en rafale
+      await new Promise((r) => setTimeout(r, config.loginDelayMs ?? 400)); // ralentit les essais en rafale
       throw new HttpError(401, 'Mot de passe incorrect');
     }
     failures.delete(ip);
@@ -356,6 +367,17 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
   route('POST', '/api/items/delete', (req, res, p, body) => ({ ok: deleteItem(repo, body.kind, Number(body.id)) }));
 
   // --------------------------------------------------------------------- mails
+  // Chaque appel à l'IA est journalisé (base + logs du serveur) pour le diagnostic.
+  const logAi = (entry) => {
+    repo.addAiLog({ feature: 'mail', ...entry });
+    const tokens = entry.input_tokens != null ? ` tokens=${entry.input_tokens}/${entry.output_tokens}` : '';
+    const line = `[ia] ${entry.ok ? 'ok' : 'ÉCHEC'} modèle=${entry.model} tentative="${entry.attempt}" statut=${entry.status ?? '-'} durée=${entry.duration_ms ?? '-'}ms${tokens} request-id=${entry.request_id || '-'}`;
+    if (entry.ok) console.info(line);
+    else console.warn(`${line} erreur="${entry.error}"`);
+  };
+  route('GET', '/api/ai-logs', () => repo.listAiLogs(50));
+  route('DELETE', '/api/ai-logs', () => ({ ok: repo.db.prepare('DELETE FROM ai_logs').run().changes >= 0 }));
+
   // Au plus 40 extractions par Claude par heure.
   const aiCalls = [];
   const aiQuota = () => {
@@ -371,7 +393,7 @@ export function createApp(repo, config, { telegram = null, whatsapp = null } = {
     const ctx = captureContext(repo);
     const useClaude = Boolean(config.anthropic.apiKey) && body.engine !== 'local';
     if (useClaude && !aiQuota()) throw new HttpError(429, "Quota d'extractions IA atteint pour l'heure (protection de la facture API) ; utilise le moteur local.");
-    const result = await extractFromEmail(body, ctx, { ...config.anthropic, disabled: !useClaude });
+    const result = await extractFromEmail(body, ctx, { ...config.anthropic, disabled: !useClaude, log: logAi });
     if (body.projectId) {
       for (const it of result.items) it.projectId ??= Number(body.projectId);
       result.projectId ??= Number(body.projectId);

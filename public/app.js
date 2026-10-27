@@ -918,7 +918,24 @@ async function renderJournal() {
 }
 
 async function renderSettings() {
-  const [s, demo] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/demo')]);
+  const [s, demo, aiLogs] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/demo'), api('GET', '/api/ai-logs')]);
+  handlers['clear-ai-logs'] = async () => {
+    if (!confirm('Vider le journal des appels IA ?')) return;
+    await api('DELETE', '/api/ai-logs');
+    renderSettings();
+  };
+  const aiRows = aiLogs
+    .map(
+      (l) => `<tr>
+        <td class="nw small">${fmtTs(l.at)}</td>
+        <td>${l.ok ? '<span class="badge st-green"><span class="dot"></span>OK</span>' : `<span class="badge st-red"><span class="dot"></span>${l.status ? `HTTP ${l.status}` : 'Échec'}</span>`}</td>
+        <td class="small">${esc(l.model || '')}<div class="muted">${esc(l.attempt || '')}</div></td>
+        <td class="small num nw">${l.duration_ms != null ? `${(l.duration_ms / 1000).toFixed(1)} s` : '—'}${l.input_tokens != null ? `<div class="muted">${l.input_tokens} → ${l.output_tokens} tokens</div>` : ''}</td>
+        <td class="small">${l.ok ? `${l.items ?? 0} élément(s) extrait(s)` : `<span class="late">${esc(l.error || '')}</span>`}<div class="muted">mail de ${l.input_chars ?? '?'} caractères${l.stop_reason ? ` · arrêt : ${esc(l.stop_reason)}` : ''}</div></td>
+        <td class="small muted" style="word-break:break-all">${esc(l.request_id || '—')}</td>
+      </tr>`
+    )
+    .join('');
   state.settings = s;
   const demoLabel = demo.label;
   handlers['clear-demo'] = async () => {
@@ -977,6 +994,10 @@ async function renderSettings() {
         <button class="btn danger" data-act="clear-demo">Supprimer les données de démonstration</button></section>`
           : ''
       }
+      <section class="card" style="grid-column:1/-1"><header><h2>Journal des appels IA</h2>${aiLogs.length ? '<button class="btn sm" data-act="clear-ai-logs">Vider</button>' : ''}</header>
+        <p class="small muted" style="margin-top:0">Chaque extraction par Claude est enregistrée ici (et dans les logs du serveur) : statut, message d'erreur de l'API, durée, tokens et identifiant de requête Anthropic (request-id, à fournir au support si besoin). Le contenu des mails n'est jamais journalisé. 50 dernières entrées affichées.</p>
+        ${aiRows ? `<div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Résultat</th><th>Modèle / tentative</th><th>Durée</th><th>Détail</th><th>request-id</th></tr></thead><tbody>${aiRows}</tbody></table></div>` : '<div class="empty">Aucun appel IA pour l’instant.</div>'}
+      </section>
       <section class="card" style="grid-column:1/-1"><header><h2>Syntaxe de capture (web, Telegram, WhatsApp)</h2></header>
         <table class="table small"><tbody>
           <tr><td><code>#CRM relancer Paul sur le budget vendredi</code></td><td>Action pour moi, projet CRM, échéance vendredi</td></tr>
