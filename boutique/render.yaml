@@ -1,0 +1,52 @@
+# Render Blueprint for the boutique app (lives in the `boutique/` subfolder of this repo).
+# In Render: New + → Blueprint → this repo → Blueprint path: boutique/render.yaml
+databases:
+  - name: boutique-db
+    plan: basic-256mb
+    region: frankfurt
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: boutique
+    runtime: node
+    plan: starter
+    region: frankfurt
+    rootDir: boutique
+    buildCommand: npm ci && npm run build
+    preDeployCommand: npm run db:migrate
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: { name: boutique-db, property: connectionString }
+      - key: TZ
+        value: Africa/Dakar
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+      - key: APP_URL
+        sync: false
+      - key: WA_PHONE_NUMBER_ID
+        sync: false
+      - key: WA_ACCESS_TOKEN
+        sync: false
+      - key: WA_APP_SECRET
+        sync: false
+      - key: WA_VERIFY_TOKEN
+        sync: false
+      - key: WA_BUSINESS_NUMBER
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_URL
+        sync: false
+      - key: PLATFORM_WAVE_NUMBER
+        sync: false
